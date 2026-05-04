@@ -17,7 +17,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
-		m.textarea.SetWidth(m.currentInputWidth())
+		m.resizeTextarea()
 		m.updateViewportSize()
 		m.refreshDetailViewport()
 		return m, nil
@@ -125,16 +125,34 @@ func (m Model) handleCommandPaletteKey(msg tea.KeyMsg) (tea.Model, tea.Cmd, bool
 }
 
 func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// 节流防御：粘贴 \n 在不支持 bracketed paste 的终端会退化成连续 KeyEnter；
+	// 真人按 Enter 与前一字符间隔通常 > 100ms，<50ms 极可能是粘贴流残片。
+	// 只记 KeyRunes（字符流）—— 功能键（↑↓/Tab/Ctrl-x）不应污染节流，
+	// 否则用户翻历史选定后立刻按 Enter 会被误吞。
+	if msg.Type == tea.KeyRunes {
+		m.lastKeyAt = time.Now()
+	}
 	switch msg.Type {
 	case tea.KeyEscape:
 		if m.mode == modeRunning && m.snapshot.IsRunning {
 			return m, abortRuntime(m.runtime)
 		}
 		m.textarea.Reset()
+		m.historyIdx = len(m.inputHistory)
+		m.historyDraft = ""
+		m.refitTextareaHeight()
 		m.clearCommandPalette()
 		return m, nil
 	case tea.KeyCtrlL:
 		m.resetOutputPanels()
+		return m, nil
+	case tea.KeyCtrlU:
+		// 清空当前输入；同时退出历史浏览态。
+		m.textarea.Reset()
+		m.historyIdx = len(m.inputHistory)
+		m.historyDraft = ""
+		m.refitTextareaHeight()
+		m.clearCommandPalette()
 		return m, nil
 	case tea.KeyCtrlR:
 		// 切换鼠标上报：开 → 关 让用户原生拖拽选中复制；关 → 开 恢复点击切焦点 / 滚轮
@@ -159,10 +177,41 @@ func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.focusPane = (m.focusPane + 1) % 3
 		return m, nil
 	case tea.KeyEnter:
+		// Alt+Enter 是主动换行，让 textarea.Update 接管（KeyMap.InsertNewline 已绑到此键）。
+		if msg.Alt {
+			break
+		}
+		// 与上一次非 Enter 按键间隔过短 → 视为粘贴流的 \n 残片：
+		// 替换为空格保留视觉间隔，与 cleanHumanKeyRunes 路径语义一致（"abc\ndef" → "abc def"）。
+		// 防御 bracketed paste 失效的终端环境（旧 SSH/某些 tmux 配置）。
+		if !m.lastKeyAt.IsZero() && time.Since(m.lastKeyAt) < 50*time.Millisecond {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+			m.refitTextareaHeight()
+			return m, cmd
+		}
 		return m.handleEnterKey()
-	case tea.KeyUp, tea.KeyPgUp:
+	case tea.KeyUp:
+		// 多行输入：让 textarea 接管光标行内移动（落到 switch 后的 textarea.Update）
+		if m.textareaIsMultiline() {
+			break
+		}
+		// 单行：优先翻历史，没有可用历史时回退到事件流滚动
+		if m.tryHistoryUp() {
+			return m, nil
+		}
 		return m.handleVerticalScrollKey(msg, true)
-	case tea.KeyDown, tea.KeyPgDown:
+	case tea.KeyDown:
+		if m.textareaIsMultiline() {
+			break
+		}
+		if m.tryHistoryDown() {
+			return m, nil
+		}
+		return m.handleVerticalScrollKey(msg, false)
+	case tea.KeyPgUp:
+		return m.handleVerticalScrollKey(msg, true)
+	case tea.KeyPgDown:
 		return m.handleVerticalScrollKey(msg, false)
 	case tea.KeyEnd:
 		if m.focusPane == focusStream {
@@ -187,6 +236,7 @@ func (m Model) handleBaseKeyMsg(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	m.refitTextareaHeight()
 	m.updateCommandPalette()
 	return m, cmd
 }
@@ -198,11 +248,15 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 	}
 	m.clearCommandPalette()
 	if cmd, ok := parseSlashCommand(text); ok {
+		m.pushInputHistory(text)
 		m.textarea.Reset()
+		m.refitTextareaHeight()
 		return m.handleSlashCommand(cmd)
 	}
 
+	m.pushInputHistory(text)
 	m.textarea.Reset()
+	m.refitTextareaHeight()
 	switch m.mode {
 	case modeNew:
 		m.err = nil
@@ -312,7 +366,7 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.applyRuntimeReplay(msg.replay)
 		if msg.resumed && m.mode == modeNew {
 			m.mode = modeRunning
-			m.textarea.SetWidth(m.currentInputWidth())
+			m.resizeTextarea()
 			m.textarea.Placeholder = defaultSteerPlaceholder()
 		}
 		return m, fetchSnapshot(m.runtime), true
@@ -485,7 +539,7 @@ func (m Model) handleStartResultMsg(msg startResultMsg) (tea.Model, tea.Cmd) {
 	if m.mode == modeNew {
 		m.cocreate = nil
 		m.mode = modeRunning
-		m.textarea.SetWidth(m.currentInputWidth())
+		m.resizeTextarea()
 		m.textarea.Placeholder = defaultSteerPlaceholder()
 		return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus())
 	}
@@ -512,6 +566,7 @@ func (m Model) handleCoCreateDoneMsg(msg cocreateDoneMsg) (tea.Model, tea.Cmd) {
 func (m Model) handleTextareaMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	m.refitTextareaHeight()
 	m.updateCommandPalette()
 	return m, cmd
 }

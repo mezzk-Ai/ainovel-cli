@@ -2,6 +2,7 @@ package tui
 
 import (
 	"strings"
+	"time"
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -74,6 +75,10 @@ type Model struct {
 	autoScroll     bool
 	streamScroll   bool // 流式面板自动跟随
 	streamDirty    bool // streamRounds 有未刷新的 delta；由 streamFlushTick 60fps 合并
+	lastKeyAt      time.Time // 上次非 Enter 按键时间；KeyEnter 节流防粘贴 \n 流误触发提交
+	inputHistory   []string  // 已提交的输入历史（去重：相邻不重复）
+	historyIdx     int       // 当前浏览索引；== len(inputHistory) 表示"未浏览，正在编辑草稿"
+	historyDraft   string    // 进入历史浏览前保存的草稿，回到末端时恢复
 	focusPane      focusPane
 	hoverPane      focusPane
 	hoverActive    bool
@@ -95,14 +100,17 @@ type Model struct {
 func NewModel(rt *host.Host, bridge *askUserBridge) Model {
 	ta := textarea.New()
 	ta.Placeholder = placeholderForNewMode(startupModeQuick)
-	ta.CharLimit = 500
+	ta.CharLimit = 2000
 	ta.SetHeight(1)
-	ta.MaxHeight = 1
+	// MaxHeight=6 让超长输入按宽度自动 wrap 显示成多行（视觉上限 6 行）。
+	ta.MaxHeight = 6
 	ta.ShowLineNumbers = false
 	ta.Focus()
 
-	// Enter 不换行（由 Update 处理提交）
-	ta.KeyMap.InsertNewline.SetEnabled(false)
+	// 默认 Enter 不换行（由 handleEnterKey 提交）；
+	// 主动换行重绑到 ctrl+j（unix \n）和 alt+enter（GUI 习惯）。
+	// 终端协议层无法区分 Shift+Enter 与 Enter，所以不支持 Shift+Enter。
+	ta.KeyMap.InsertNewline.SetKeys("ctrl+j", "alt+enter")
 
 	vp := viewport.New(80, 20)
 	vp.SetContent("")
@@ -282,6 +290,103 @@ func (m *Model) currentInputWidth() int {
 		return coCreateInputWidth(m.width, m.height)
 	}
 	return m.inputWidth()
+}
+
+// refitTextareaHeight 按当前内容估算视觉行数，动态 SetHeight。
+// 视觉行 = 逻辑行（\n 切分）每段按宽度 wrap 后的总和。配合 MaxHeight=6
+// 实现"超长内容/主动换行自动多行展示，最多 6 行"。
+func (m *Model) refitTextareaHeight() {
+	w := m.textarea.Width()
+	if w <= 0 {
+		return
+	}
+	text := m.textarea.Value()
+	if text == "" {
+		m.textarea.SetHeight(1)
+		return
+	}
+	// 扣 2 列冗余（textarea 内部 prompt symbol + cursor），偏多 1 行可接受。
+	contentW := w - 2
+	if contentW < 1 {
+		contentW = 1
+	}
+	total := 0
+	for line := range strings.SplitSeq(text, "\n") {
+		lw := lipgloss.Width(line)
+		if lw == 0 {
+			total++
+			continue
+		}
+		total += (lw + contentW - 1) / contentW
+	}
+	if total < 1 {
+		total = 1
+	}
+	m.textarea.SetHeight(total) // SetHeight 内部按 MaxHeight clamp
+}
+
+// resizeTextarea 同步设置宽度与基于内容的高度。
+// 替代散落各处的 SetWidth(currentInputWidth()) 调用，保证宽度变化时高度跟随。
+func (m *Model) resizeTextarea() {
+	m.textarea.SetWidth(m.currentInputWidth())
+	m.refitTextareaHeight()
+}
+
+// maxInputHistory 限制历史长度，避免长会话内存增长。
+const maxInputHistory = 200
+
+// pushInputHistory 把成功提交的内容追加到历史，相邻去重。同步重置浏览索引。
+func (m *Model) pushInputHistory(text string) {
+	if text == "" {
+		return
+	}
+	if n := len(m.inputHistory); n == 0 || m.inputHistory[n-1] != text {
+		m.inputHistory = append(m.inputHistory, text)
+		if len(m.inputHistory) > maxInputHistory {
+			m.inputHistory = m.inputHistory[len(m.inputHistory)-maxInputHistory:]
+		}
+	}
+	m.historyIdx = len(m.inputHistory)
+	m.historyDraft = ""
+}
+
+// tryHistoryUp 向更早一条历史走；返回是否处理了按键。
+// 首次进入历史浏览时把当前 textarea 内容存为 draft，回到末端时恢复。
+// 调用方需自行判断多行场景下是否应该绕开（让 textarea 处理光标行内移动）。
+func (m *Model) tryHistoryUp() bool {
+	if len(m.inputHistory) == 0 || m.historyIdx <= 0 {
+		return false
+	}
+	if m.historyIdx == len(m.inputHistory) {
+		m.historyDraft = m.textarea.Value()
+	}
+	m.historyIdx--
+	m.textarea.SetValue(m.inputHistory[m.historyIdx])
+	m.textarea.CursorEnd()
+	m.refitTextareaHeight()
+	return true
+}
+
+// tryHistoryDown 向更新一条历史走；走到末端恢复 draft。
+func (m *Model) tryHistoryDown() bool {
+	if m.historyIdx >= len(m.inputHistory) {
+		return false
+	}
+	m.historyIdx++
+	if m.historyIdx == len(m.inputHistory) {
+		m.textarea.SetValue(m.historyDraft)
+		m.historyDraft = ""
+	} else {
+		m.textarea.SetValue(m.inputHistory[m.historyIdx])
+	}
+	m.textarea.CursorEnd()
+	m.refitTextareaHeight()
+	return true
+}
+
+// textareaIsMultiline 当前 textarea 内容是否含主动换行；用于决定 ↑↓ 是走历史还是行内移动。
+func (m *Model) textareaIsMultiline() bool {
+	return strings.Contains(m.textarea.Value(), "\n")
 }
 
 // inputHints 根据当前状态生成底部提示文本。
@@ -496,7 +601,7 @@ func (m *Model) sendCoCreate() tea.Cmd {
 	m.cocreateSeq++
 	m.cocreate.reqID = m.cocreateSeq
 	m.cocreate.awaiting = true
-	m.textarea.SetWidth(m.currentInputWidth())
+	m.resizeTextarea()
 	m.textarea.Placeholder = placeholderForCoCreate(m.cocreate)
 	m.textarea.Blur()
 	return runCoCreate(m.runtime, m.cocreate)
@@ -543,6 +648,18 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	case tea.KeyEnter:
+		// Alt+Enter → 主动换行，让 textarea.Update 接管（KeyMap.InsertNewline 已绑此键）
+		if msg.Alt {
+			break
+		}
+		// 与上一次字符按键间隔过短 → 视为粘贴流的 \n 残片：补空格代替提交。
+		// 与 base 路径同源的防御（详见 handleBaseKeyMsg KeyEnter 分支注释）。
+		if !m.lastKeyAt.IsZero() && time.Since(m.lastKeyAt) < 50*time.Millisecond {
+			var cmd tea.Cmd
+			m.textarea, cmd = m.textarea.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+			m.refitTextareaHeight()
+			return m, cmd
+		}
 		text := utils.CleanInputLine(m.textarea.Value())
 		if text == "" {
 			return m, nil
@@ -550,8 +667,13 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.err = nil
 		state.appendUser(text)
 		m.textarea.Reset()
+		m.refitTextareaHeight()
 		cmd := m.sendCoCreate()
 		return m, cmd
+	case tea.KeyCtrlU:
+		m.textarea.Reset()
+		m.refitTextareaHeight()
+		return m, nil
 	}
 
 	// 常规输入转发给 textarea
@@ -562,8 +684,12 @@ func (m Model) handleCoCreateKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg, ok = cleanHumanKeyRunes(msg); !ok {
 		return m, nil
 	}
+	if msg.Type == tea.KeyRunes {
+		m.lastKeyAt = time.Now()
+	}
 	var cmd tea.Cmd
 	m.textarea, cmd = m.textarea.Update(msg)
+	m.refitTextareaHeight()
 	return m, cmd
 }
 
@@ -574,7 +700,7 @@ func (m Model) exitCoCreate() (tea.Model, tea.Cmd) {
 	}
 	initial := m.cocreate.initialInput()
 	m.cocreate = nil
-	m.textarea.SetWidth(m.currentInputWidth())
+	m.resizeTextarea()
 	m.textarea.SetValue(initial)
 	m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
 	return m, m.textarea.Focus()
