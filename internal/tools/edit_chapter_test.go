@@ -3,11 +3,12 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
-	"github.com/voocel/ainovel-cli/internal/apperr"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -133,8 +134,8 @@ func TestEditChapterRejectsCompletedWithoutQueue(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection for completed chapter not in PendingRewrites")
 	}
-	if !apperr.IsCode(err, apperr.CodeToolPreconditionFailed) {
-		t.Fatalf("expected CodeToolPreconditionFailed, got %v (code=%s)", err, apperr.CodeOf(err))
+	if !errors.Is(err, errs.ErrToolPrecondition) {
+		t.Fatalf("expected ErrToolPrecondition, got %v", err)
 	}
 }
 
@@ -218,8 +219,8 @@ func TestEditChapterRejectsEmptyOldString(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection for empty old_string")
 	}
-	if !apperr.IsCode(err, apperr.CodeToolArgsInvalid) {
-		t.Fatalf("expected CodeToolArgsInvalid, got %v", err)
+	if !errors.Is(err, errs.ErrToolArgs) {
+		t.Fatalf("expected ErrToolArgs, got %v", err)
 	}
 }
 
@@ -244,8 +245,8 @@ func TestEditChapterRejectsNoDraftNoFinal(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected rejection when neither draft nor chapter exists")
 	}
-	if !apperr.IsCode(err, apperr.CodeToolPreconditionFailed) {
-		t.Fatalf("expected CodeToolPreconditionFailed, got %v", err)
+	if !errors.Is(err, errs.ErrToolPrecondition) {
+		t.Fatalf("expected ErrToolPrecondition, got %v", err)
 	}
 }
 

@@ -7,7 +7,7 @@ import (
 	"strings"
 
 	"github.com/voocel/agentcore/llm"
-	"github.com/voocel/ainovel-cli/internal/apperr"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/models"
 	"github.com/voocel/ainovel-cli/internal/utils"
 )
@@ -78,11 +78,7 @@ func (pc ProviderConfig) ProviderType(name string) (string, error) {
 	if llm.IsProviderRegistered(name) {
 		return name, nil
 	}
-	return "", apperr.New(
-		apperr.CodeProviderInvalid,
-		"bootstrap.provider_type",
-		fmt.Sprintf("provider %q 缺少 type，且不在 litellm 已知 provider 列表中", name),
-	)
+	return "", fmt.Errorf("provider %q 缺少 type，且不在 litellm 已知 provider 列表中: %w", name, errs.ErrConfig)
 }
 
 // ModelRef 表示一个 provider/model 组合。
@@ -141,27 +137,19 @@ func (c *Config) ValidateBase() error {
 	}
 
 	if c.Provider == "" {
-		return apperr.New(apperr.CodeConfigInvalid, "bootstrap.validate_base", "provider is required")
+		return fmt.Errorf("provider is required: %w", errs.ErrConfig)
 	}
 	if c.ModelName == "" {
-		return apperr.New(apperr.CodeConfigInvalid, "bootstrap.validate_base", "model is required")
+		return fmt.Errorf("model is required: %w", errs.ErrConfig)
 	}
 
 	// 默认 provider 必须有凭证
 	pc, ok := c.Providers[c.Provider]
 	if !ok {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("provider %q is not configured in providers", c.Provider),
-		)
+		return fmt.Errorf("provider %q is not configured in providers: %w", c.Provider, errs.ErrConfig)
 	}
 	if pc.RequiresAPIKey(c.Provider) && pc.APIKey == "" {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("provider %q has no api_key configured", c.Provider),
-		)
+		return fmt.Errorf("provider %q has no api_key configured: %w", c.Provider, errs.ErrConfig)
 	}
 	if err := validateProviderConfigText(c.Provider, pc); err != nil {
 		return err
@@ -187,18 +175,10 @@ func (c *Config) ValidateBase() error {
 			return err
 		}
 		if !knownRoles[role] {
-			return apperr.New(
-				apperr.CodeConfigInvalid,
-				"bootstrap.validate_base",
-				fmt.Sprintf("unknown role %q in roles config (valid: coordinator/architect/writer/editor)", role),
-			)
+			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor): %w", role, errs.ErrConfig)
 		}
 		if rc.Provider == "" || rc.Model == "" {
-			return apperr.New(
-				apperr.CodeConfigInvalid,
-				"bootstrap.validate_base",
-				fmt.Sprintf("role %q must have both provider and model", role),
-			)
+			return fmt.Errorf("role %q must have both provider and model: %w", role, errs.ErrConfig)
 		}
 		if err := c.validateModelRef(
 			fmt.Sprintf("role %q", role),
@@ -249,11 +229,7 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 
 func validateConfigText(name, value string) error {
 	if utils.ContainsControl(value) {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("%s contains control character", name),
-		)
+		return fmt.Errorf("%s contains control character: %w", name, errs.ErrConfig)
 	}
 	return nil
 }
@@ -368,27 +344,15 @@ func (c Config) CandidateModels(provider string) []string {
 
 func (c Config) validateModelRef(owner string, ref ModelRef) error {
 	if ref.Provider == "" || ref.Model == "" {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("%s must have both provider and model", owner),
-		)
+		return fmt.Errorf("%s must have both provider and model: %w", owner, errs.ErrConfig)
 	}
 
 	pc, ok := c.Providers[ref.Provider]
 	if !ok {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("%s references provider %q which is not configured", owner, ref.Provider),
-		)
+		return fmt.Errorf("%s references provider %q which is not configured: %w", owner, ref.Provider, errs.ErrConfig)
 	}
 	if pc.RequiresAPIKey(ref.Provider) && pc.APIKey == "" {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.validate_base",
-			fmt.Sprintf("%s references provider %q which has no api_key", owner, ref.Provider),
-		)
+		return fmt.Errorf("%s references provider %q which has no api_key: %w", owner, ref.Provider, errs.ErrConfig)
 	}
 	return nil
 }

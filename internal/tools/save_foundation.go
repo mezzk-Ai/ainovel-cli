@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -50,7 +51,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		Arc     int             `json:"arc"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	content, err := normalizeFoundationContent(a.Content)
 	if err != nil {
@@ -60,10 +61,10 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		switch domain.PlanningTier(a.Scale) {
 		case domain.PlanningTierShort, domain.PlanningTierMid, domain.PlanningTierLong:
 		default:
-			return nil, fmt.Errorf("invalid scale %q, expected short/mid/long", a.Scale)
+			return nil, fmt.Errorf("invalid scale %q, expected short/mid/long: %w", a.Scale, errs.ErrToolArgs)
 		}
 		if err := t.store.RunMeta.SetPlanningTier(domain.PlanningTier(a.Scale)); err != nil {
-			return nil, fmt.Errorf("save planning tier: %w", err)
+			return nil, fmt.Errorf("save planning tier: %w: %w", errs.ErrStoreWrite, err)
 		}
 	}
 
@@ -72,7 +73,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	// 写作阶段禁止全量覆盖大纲，只允许增量操作（expand_arc / append_volume）
 	if (a.Type == "outline" || a.Type == "layered_outline") && t.isWriting() {
 		return nil, fmt.Errorf(
-			"写作阶段禁止使用 %s 全量覆盖大纲。请使用 expand_arc 展开骨架弧，或 append_volume 追加新卷", a.Type)
+			"写作阶段禁止使用 %s 全量覆盖大纲。请使用 expand_arc 展开骨架弧，或 append_volume 追加新卷: %w", a.Type, errs.ErrToolPrecondition)
 	}
 
 	decode := func(typeName string, out any) error {
@@ -83,7 +84,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	case "premise":
 		name := domain.ExtractNovelNameFromPremise(content)
 		if err := t.store.Outline.SavePremise(content); err != nil {
-			return nil, fmt.Errorf("save premise: %w", err)
+			return nil, fmt.Errorf("save premise: %w: %w", errs.ErrStoreWrite, err)
 		}
 		if name != "" {
 			_ = t.store.Progress.SetNovelName(name)
@@ -97,7 +98,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.Outline.SaveOutline(entries); err != nil {
-			return nil, fmt.Errorf("save outline: %w", err)
+			return nil, fmt.Errorf("save outline: %w: %w", errs.ErrStoreWrite, err)
 		}
 		_ = t.store.Progress.UpdatePhase(domain.PhaseOutline)
 		_ = t.store.Progress.SetTotalChapters(len(entries))
@@ -114,11 +115,11 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.Outline.SaveLayeredOutline(volumes); err != nil {
-			return nil, fmt.Errorf("save layered_outline: %w", err)
+			return nil, fmt.Errorf("save layered_outline: %w: %w", errs.ErrStoreWrite, err)
 		}
 		flat := domain.FlattenOutline(volumes)
 		if err := t.store.Outline.SaveOutline(flat); err != nil {
-			return nil, fmt.Errorf("save flattened outline: %w", err)
+			return nil, fmt.Errorf("save flattened outline: %w: %w", errs.ErrStoreWrite, err)
 		}
 		total := domain.TotalChapters(volumes)
 		_ = t.store.Progress.UpdatePhase(domain.PhaseOutline)
@@ -136,7 +137,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.Characters.Save(chars); err != nil {
-			return nil, fmt.Errorf("save characters: %w", err)
+			return nil, fmt.Errorf("save characters: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(chars)
 
@@ -146,20 +147,20 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.World.SaveWorldRules(rules); err != nil {
-			return nil, fmt.Errorf("save world_rules: %w", err)
+			return nil, fmt.Errorf("save world_rules: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["count"] = len(rules)
 
 	case "expand_arc":
 		if a.Volume <= 0 || a.Arc <= 0 {
-			return nil, fmt.Errorf("expand_arc requires volume and arc parameters")
+			return nil, fmt.Errorf("expand_arc requires volume and arc parameters: %w", errs.ErrToolArgs)
 		}
 		var chapters []domain.OutlineEntry
 		if err := decode("expand_arc chapters", &chapters); err != nil {
 			return nil, err
 		}
 		if err := t.store.ExpandArc(a.Volume, a.Arc, chapters); err != nil {
-			return nil, fmt.Errorf("expand arc: %w", err)
+			return nil, fmt.Errorf("expand arc: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
@@ -171,7 +172,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			return nil, err
 		}
 		if err := t.store.AppendVolume(vol); err != nil {
-			return nil, fmt.Errorf("append volume: %w", err)
+			return nil, fmt.Errorf("append volume: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = vol.Index
 		result["arcs"] = len(vol.Arcs)
@@ -185,10 +186,10 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 
 	case "mark_final":
 		if a.Volume <= 0 {
-			return nil, fmt.Errorf("mark_final requires volume parameter")
+			return nil, fmt.Errorf("mark_final requires volume parameter: %w", errs.ErrToolArgs)
 		}
 		if err := t.store.Outline.MarkVolumeFinal(a.Volume); err != nil {
-			return nil, fmt.Errorf("mark volume final: %w", err)
+			return nil, fmt.Errorf("mark volume final: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["volume"] = a.Volume
 		result["final"] = true
@@ -204,13 +205,13 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 			compass.LastUpdated = p.LatestCompleted()
 		}
 		if err := t.store.Outline.SaveCompass(compass); err != nil {
-			return nil, fmt.Errorf("save compass: %w", err)
+			return nil, fmt.Errorf("save compass: %w: %w", errs.ErrStoreWrite, err)
 		}
 		result["ending_direction"] = compass.EndingDirection
 		result["last_updated"] = compass.LastUpdated
 
 	default:
-		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/append_volume/update_compass/mark_final", a.Type)
+		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/append_volume/update_compass/mark_final: %w", a.Type, errs.ErrToolArgs)
 	}
 
 	// checkpoint
@@ -221,7 +222,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		scope = domain.GlobalScope()
 	}
 	if _, err := t.store.Checkpoints.AppendArtifact(scope, a.Type, foundationArtifact(a.Type)); err != nil {
-		return nil, fmt.Errorf("checkpoint foundation %s: %w", a.Type, err)
+		return nil, fmt.Errorf("checkpoint foundation %s: %w: %w", a.Type, errs.ErrStoreWrite, err)
 	}
 
 	// 返回剩余未完成项，引导 Architect 继续或结束；
@@ -295,7 +296,7 @@ func offsetToLineCol(s string, offset int) (int, int) {
 
 func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 	if len(raw) == 0 {
-		return "", fmt.Errorf("content is required")
+		return "", fmt.Errorf("content is required: %w", errs.ErrToolArgs)
 	}
 
 	var text string
@@ -304,7 +305,7 @@ func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 	}
 
 	if !json.Valid(raw) {
-		return "", fmt.Errorf("invalid content: expected Markdown string or valid JSON value")
+		return "", fmt.Errorf("invalid content: expected Markdown string or valid JSON value: %w", errs.ErrToolArgs)
 	}
 	return string(raw), nil
 }

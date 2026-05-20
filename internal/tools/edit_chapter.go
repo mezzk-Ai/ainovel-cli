@@ -8,8 +8,8 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	agentcoretools "github.com/voocel/agentcore/tools"
-	"github.com/voocel/ainovel-cli/internal/apperr"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -30,7 +30,7 @@ type EditChapterTool struct {
 func NewEditChapterTool(s *store.Store) *EditChapterTool {
 	return &EditChapterTool{
 		store: s,
-		edit:  agentcoretools.NewEdit(s.Dir()),
+		edit:  agentcoretools.NewEdit(s.Dir(), nil),
 	}
 }
 
@@ -71,27 +71,23 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 		ReplaceAll bool   `json:"replace_all"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeToolArgsInvalid, "tools.edit_chapter.decode_args", "invalid args")
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if a.Chapter <= 0 {
-		return nil, apperr.New(apperr.CodeToolArgsInvalid, "tools.edit_chapter.validate_args", "chapter must be > 0")
+		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
 	}
 	if a.OldString == "" {
-		return nil, apperr.New(apperr.CodeToolArgsInvalid, "tools.edit_chapter.validate_args", "old_string 不能为空")
+		return nil, fmt.Errorf("old_string 不能为空: %w", errs.ErrToolArgs)
 	}
 	if a.OldString == a.NewString {
-		return nil, apperr.New(apperr.CodeToolArgsInvalid, "tools.edit_chapter.validate_args", "old_string 与 new_string 相同，无需修改")
+		return nil, fmt.Errorf("old_string 与 new_string 相同，无需修改: %w", errs.ErrToolArgs)
 	}
 
 	// 归属检查：已完成章节必须在重写队列中，避免污染终稿
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
 		progress, _ := t.store.Progress.Load()
 		if progress == nil || !slices.Contains(progress.PendingRewrites, a.Chapter) {
-			return nil, apperr.New(
-				apperr.CodeToolPreconditionFailed,
-				"tools.edit_chapter.validate_chapter",
-				fmt.Sprintf("第 %d 章已完成且不在 PendingRewrites 队列中，不能编辑；需修改请先由 editor 评审触发重写/打磨", a.Chapter),
-			)
+			return nil, fmt.Errorf("第 %d 章已完成且不在 PendingRewrites 队列中，不能编辑；需修改请先由 editor 评审触发重写/打磨: %w", a.Chapter, errs.ErrToolPrecondition)
 		}
 	}
 
@@ -112,14 +108,14 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 	})
 	result, err := t.edit.Execute(ctx, subArgs)
 	if err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeToolPreconditionFailed, "tools.edit_chapter.apply", "apply edit")
+		return nil, fmt.Errorf("apply edit: %w: %w", errs.ErrToolPrecondition, err)
 	}
 
 	if _, err := t.store.Checkpoints.AppendArtifact(
 		domain.ChapterScope(a.Chapter), "edit",
 		fmt.Sprintf("drafts/%02d.draft.md", a.Chapter),
 	); err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeStoreWriteFailed, "tools.edit_chapter.checkpoint", "checkpoint edit")
+		return nil, fmt.Errorf("checkpoint edit: %w: %w", errs.ErrStoreWrite, err)
 	}
 
 	// 附加指引：让 writer 知道后续步骤，避免遗漏 check_consistency / commit_chapter
@@ -139,24 +135,20 @@ func (t *EditChapterTool) Execute(ctx context.Context, args json.RawMessage) (js
 func (t *EditChapterTool) ensureDraft(chapter int) error {
 	draft, err := t.store.Drafts.LoadDraft(chapter)
 	if err != nil {
-		return apperr.Wrap(err, apperr.CodeStoreReadFailed, "tools.edit_chapter.load_draft", "load draft")
+		return fmt.Errorf("load draft: %w: %w", errs.ErrStoreRead, err)
 	}
 	if draft != "" {
 		return nil
 	}
 	text, err := t.store.Drafts.LoadChapterText(chapter)
 	if err != nil {
-		return apperr.Wrap(err, apperr.CodeStoreReadFailed, "tools.edit_chapter.load_chapter", "load chapter")
+		return fmt.Errorf("load chapter: %w: %w", errs.ErrStoreRead, err)
 	}
 	if text == "" {
-		return apperr.New(
-			apperr.CodeToolPreconditionFailed,
-			"tools.edit_chapter.seed_draft",
-			fmt.Sprintf("第 %d 章无草稿也无终稿，请先调 draft_chapter(mode=write, chapter=%d) 创建初稿", chapter, chapter),
-		)
+		return fmt.Errorf("第 %d 章无草稿也无终稿，请先调 draft_chapter(mode=write, chapter=%d) 创建初稿: %w", chapter, chapter, errs.ErrToolPrecondition)
 	}
 	if err := t.store.Drafts.SaveDraft(chapter, text); err != nil {
-		return apperr.Wrap(err, apperr.CodeStoreWriteFailed, "tools.edit_chapter.seed_draft", "seed draft from chapter")
+		return fmt.Errorf("seed draft from chapter: %w: %w", errs.ErrStoreWrite, err)
 	}
 	return nil
 }

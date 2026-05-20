@@ -14,6 +14,10 @@
   - handoff / recovery
   - 可观测性与排障入口
 
+- [观测手册](./observability.md)
+  跑长篇时的实操排障手册：每个事实工件该看什么、健康度如何判断、新机制（compass/配角名册等）如何端到端验证。
+  适合"跑到第 N 章发现奇怪现象"时打开。
+
 ## 建议后续补充
 
 - `runtime-and-recovery.md`

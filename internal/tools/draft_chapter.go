@@ -9,6 +9,7 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -57,13 +58,13 @@ func (t *DraftChapterTool) Execute(_ context.Context, args json.RawMessage) (jso
 		Mode    string `json:"mode"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if a.Chapter <= 0 {
-		return nil, fmt.Errorf("chapter must be > 0")
+		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
 	}
 	if a.Content == "" {
-		return nil, fmt.Errorf("content must not be empty")
+		return nil, fmt.Errorf("content must not be empty: %w", errs.ErrToolArgs)
 	}
 	if t.store.Progress.IsChapterCompleted(a.Chapter) {
 		// 打磨/重写路径：章节虽已完成，但仍在 pending_rewrites 中，允许覆盖草稿

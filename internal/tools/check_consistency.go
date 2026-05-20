@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -41,10 +42,10 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 		Chapter int `json:"chapter"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if a.Chapter <= 0 {
-		return nil, fmt.Errorf("chapter must be > 0")
+		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
 	}
 
 	result := map[string]any{"chapter": a.Chapter}
@@ -52,10 +53,10 @@ func (t *CheckConsistencyTool) Execute(_ context.Context, args json.RawMessage) 
 	// 章节内容
 	content, wordCount, err := t.store.Drafts.LoadChapterContent(a.Chapter)
 	if err != nil {
-		return nil, fmt.Errorf("load chapter content: %w", err)
+		return nil, fmt.Errorf("load chapter content: %w: %w", errs.ErrStoreRead, err)
 	}
 	if content == "" {
-		return nil, fmt.Errorf("no content found for chapter %d", a.Chapter)
+		return nil, fmt.Errorf("no content found for chapter %d: %w", a.Chapter, errs.ErrToolPrecondition)
 	}
 	result["content"] = content
 	result["word_count"] = wordCount

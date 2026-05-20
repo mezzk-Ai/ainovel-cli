@@ -8,6 +8,7 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -73,10 +74,10 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 		} `json:"style_rules"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if a.Volume <= 0 || a.Arc <= 0 {
-		return nil, fmt.Errorf("volume and arc must be > 0")
+		return nil, fmt.Errorf("volume and arc must be > 0: %w", errs.ErrToolArgs)
 	}
 
 	arcSummary := domain.ArcSummary{
@@ -87,7 +88,7 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 		KeyEvents: a.KeyEvents,
 	}
 	if err := t.store.Summaries.SaveArcSummary(arcSummary); err != nil {
-		return nil, fmt.Errorf("save arc summary: %w", err)
+		return nil, fmt.Errorf("save arc summary: %w: %w", errs.ErrStoreWrite, err)
 	}
 
 	if len(a.CharacterSnapshots) > 0 {
@@ -96,7 +97,7 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 			a.CharacterSnapshots[i].Arc = a.Arc
 		}
 		if err := t.store.Characters.SaveSnapshots(a.Volume, a.Arc, a.CharacterSnapshots); err != nil {
-			return nil, fmt.Errorf("save character snapshots: %w", err)
+			return nil, fmt.Errorf("save character snapshots: %w: %w", errs.ErrStoreWrite, err)
 		}
 	}
 
@@ -111,7 +112,7 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 			UpdatedAt: time.Now().Format(time.RFC3339),
 		}
 		if err := t.store.World.SaveStyleRules(rules); err != nil {
-			return nil, fmt.Errorf("save style rules: %w", err)
+			return nil, fmt.Errorf("save style rules: %w: %w", errs.ErrStoreWrite, err)
 		}
 		styleRulesSaved = true
 	}
@@ -120,7 +121,7 @@ func (t *SaveArcSummaryTool) Execute(_ context.Context, args json.RawMessage) (j
 		domain.ArcScope(a.Volume, a.Arc), "arc_summary",
 		fmt.Sprintf("summaries/arc-v%02da%02d.json", a.Volume, a.Arc),
 	); err != nil {
-		return nil, fmt.Errorf("checkpoint arc summary: %w", err)
+		return nil, fmt.Errorf("checkpoint arc summary: %w: %w", errs.ErrStoreWrite, err)
 	}
 
 	return json.Marshal(map[string]any{

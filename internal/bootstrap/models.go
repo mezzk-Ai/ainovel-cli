@@ -11,7 +11,7 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
-	"github.com/voocel/ainovel-cli/internal/apperr"
+	"github.com/voocel/ainovel-cli/internal/errs"
 )
 
 // 长输出 + 长 ctx 场景下，reasoning-aware provider（mimo / deepseek-r1 等）
@@ -21,17 +21,11 @@ import (
 // 仍小于 RequestTimeout 10 分钟，网络真死时仍能兜底。
 const streamIdleTimeout = 5 * time.Minute
 
-var failoverEligibleCodes = map[apperr.Code]bool{
-	apperr.CodeProviderRateLimit:  true,
-	apperr.CodeProviderTimeout:    true,
-	apperr.CodeProviderNetwork:    true,
-	apperr.CodeProviderStreamIdle: true,
-}
-
 // FailoverEvent 表示一次显式 provider 切换。
+// Reason 为短标签（rate_limit / timeout / stream_idle / network），用于结构化日志。
 type FailoverEvent struct {
 	Role         string
-	Code         apperr.Code
+	Reason       string
 	FromProvider string
 	FromModel    string
 	ToProvider   string
@@ -174,15 +168,11 @@ func (ms *ModelSet) CurrentSelection(role string) (provider, model string, expli
 func (ms *ModelSet) Swap(role, provider, model string) error {
 	pc, ok := ms.config.Providers[provider]
 	if !ok {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.model_set.swap",
-			fmt.Sprintf("provider %q is not configured", provider),
-		)
+		return fmt.Errorf("provider %q is not configured: %w", provider, errs.ErrConfig)
 	}
 	next, err := createModelFromConfig(provider, model, pc, make(map[string]agentcore.ChatModel))
 	if err != nil {
-		return apperr.Wrap(err, apperr.CodeProviderInitFailed, "bootstrap.model_set.swap", "切换模型失败")
+		return fmt.Errorf("切换模型失败: %w", err)
 	}
 
 	if role == "" || role == "default" {
@@ -191,11 +181,7 @@ func (ms *ModelSet) Swap(role, provider, model string) error {
 	}
 
 	if !knownRoles[role] {
-		return apperr.New(
-			apperr.CodeConfigInvalid,
-			"bootstrap.model_set.swap",
-			fmt.Sprintf("unknown role %q", role),
-		)
+		return fmt.Errorf("unknown role %q: %w", role, errs.ErrConfig)
 	}
 
 	if existing, ok := ms.models[role]; ok {
@@ -224,7 +210,7 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 	defaultPC := cfg.DefaultProviderConfig()
 	defaultModel, err := createModelFromConfig(cfg.Provider, cfg.ModelName, defaultPC, cache)
 	if err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeProviderInitFailed, "bootstrap.new_model_set", "default model")
+		return nil, fmt.Errorf("default model: %w", err)
 	}
 
 	ms := &ModelSet{
@@ -238,20 +224,11 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 	for role, rc := range cfg.Roles {
 		pc, ok := cfg.Providers[rc.Provider]
 		if !ok {
-			return nil, apperr.New(
-				apperr.CodeConfigInvalid,
-				"bootstrap.new_model_set",
-				fmt.Sprintf("role %s references unknown provider %q", role, rc.Provider),
-			)
+			return nil, fmt.Errorf("role %s references unknown provider %q: %w", role, rc.Provider, errs.ErrConfig)
 		}
 		m, err := createModelFromConfig(rc.Provider, rc.Model, pc, cache)
 		if err != nil {
-			return nil, apperr.Wrap(
-				err,
-				apperr.CodeProviderInitFailed,
-				"bootstrap.new_model_set",
-				fmt.Sprintf("role %s model", role),
-			)
+			return nil, fmt.Errorf("role %s model: %w", role, err)
 		}
 		ms.models[role] = NewSwappableModel(rc.Provider, rc.Model, m)
 		slog.Info("角色模型分配", "module", "config", "role", role, "provider", rc.Provider, "model", rc.Model)
@@ -263,20 +240,11 @@ func NewModelSet(cfg Config) (*ModelSet, error) {
 		for _, fallback := range rc.Fallbacks {
 			fpc, ok := cfg.Providers[fallback.Provider]
 			if !ok {
-				return nil, apperr.New(
-					apperr.CodeConfigInvalid,
-					"bootstrap.new_model_set",
-					fmt.Sprintf("role %s fallback references unknown provider %q", role, fallback.Provider),
-				)
+				return nil, fmt.Errorf("role %s fallback references unknown provider %q: %w", role, fallback.Provider, errs.ErrConfig)
 			}
 			fm, err := createModelFromConfig(fallback.Provider, fallback.Model, fpc, cache)
 			if err != nil {
-				return nil, apperr.Wrap(
-					err,
-					apperr.CodeProviderInitFailed,
-					"bootstrap.new_model_set",
-					fmt.Sprintf("role %s fallback %s/%s", role, fallback.Provider, fallback.Model),
-				)
+				return nil, fmt.Errorf("role %s fallback %s/%s: %w", role, fallback.Provider, fallback.Model, err)
 			}
 			targets = append(targets, modelTarget{
 				provider: fallback.Provider,
@@ -299,7 +267,7 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 
 	providerType, err := pc.ProviderType(providerKey)
 	if err != nil {
-		return nil, apperr.Wrap(err, apperr.CodeProviderInvalid, "bootstrap.create_model", "解析 provider 类型失败")
+		return nil, fmt.Errorf("解析 provider 类型失败: %w", err)
 	}
 
 	m, err := llm.NewModel(providerType, model,
@@ -308,12 +276,7 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 		llm.WithStreamIdleTimeout(streamIdleTimeout),
 	)
 	if err != nil {
-		return nil, apperr.Wrap(
-			err,
-			apperr.CodeProviderInitFailed,
-			"bootstrap.create_model",
-			fmt.Sprintf("provider %s (%s)", providerKey, providerType),
-		)
+		return nil, fmt.Errorf("provider %s (%s): %w: %w", providerKey, providerType, errs.ErrProvider, err)
 	}
 	cache[cacheKey] = m
 	return m, nil
@@ -333,11 +296,11 @@ func (m *failoverModel) Generate(ctx context.Context, messages []agentcore.Messa
 		return resp, nil
 	}
 
-	next, code, ok := m.pickFallback(current, err)
+	next, reason, ok := m.pickFallback(current, err)
 	if !ok {
 		return nil, err
 	}
-	m.reportFailover(current, next, code, err)
+	m.reportFailover(current, next, reason, err)
 	return next.model.Generate(ctx, messages, tools, opts...)
 }
 
@@ -354,9 +317,9 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 		source, resp, err := m.startAttempt(ctx, current, messages, tools, opts...)
 		if err != nil {
 			if !fallbackUsed {
-				if next, code, ok := m.pickFallback(current, err); ok {
+				if next, reason, ok := m.pickFallback(current, err); ok {
 					fallbackUsed = true
-					m.reportFailover(current, next, code, err)
+					m.reportFailover(current, next, reason, err)
 					current = next
 					goto retry
 				}
@@ -378,9 +341,9 @@ func (m *failoverModel) GenerateStream(ctx context.Context, messages []agentcore
 			switch ev.Type {
 			case agentcore.StreamEventError:
 				if ev.Err != nil && !forwarded && !fallbackUsed {
-					if next, code, ok := m.pickFallback(current, ev.Err); ok {
+					if next, reason, ok := m.pickFallback(current, ev.Err); ok {
 						fallbackUsed = true
-						m.reportFailover(current, next, code, ev.Err)
+						m.reportFailover(current, next, reason, ev.Err)
 						current = next
 						goto retry
 					}
@@ -430,19 +393,18 @@ func (m *failoverModel) currentTarget() modelTarget {
 	}
 }
 
-func (m *failoverModel) pickFallback(current modelTarget, err error) (modelTarget, apperr.Code, bool) {
+func (m *failoverModel) pickFallback(current modelTarget, err error) (modelTarget, string, bool) {
 	if err == nil || current.model == nil {
-		return modelTarget{}, apperr.CodeUnknown, false
+		return modelTarget{}, "", false
 	}
 	if errors.Is(err, context.Canceled) {
-		return modelTarget{}, apperr.CodeUnknown, false
+		return modelTarget{}, "", false
 	}
 
-	classified := apperr.ClassifyProviderError(err, "bootstrap.failover")
-	code := apperr.CodeOf(classified)
-	if !failoverEligibleCodes[code] {
-		return modelTarget{}, code, false
+	if !agentcore.IsFailoverEligible(err) {
+		return modelTarget{}, agentcore.FailoverReason(err), false
 	}
+	reason := agentcore.FailoverReason(err)
 	for _, target := range m.fallbacks {
 		if target.provider == current.provider && target.name == current.name {
 			continue
@@ -450,16 +412,16 @@ func (m *failoverModel) pickFallback(current modelTarget, err error) (modelTarge
 		if target.model == nil {
 			continue
 		}
-		return target, code, true
+		return target, reason, true
 	}
-	return modelTarget{}, code, false
+	return modelTarget{}, reason, false
 }
 
-func (m *failoverModel) reportFailover(from, to modelTarget, code apperr.Code, err error) {
+func (m *failoverModel) reportFailover(from, to modelTarget, reason string, err error) {
 	if m.report != nil {
 		m.report(FailoverEvent{
 			Role:         m.role,
-			Code:         code,
+			Reason:       reason,
 			FromProvider: from.provider,
 			FromModel:    from.name,
 			ToProvider:   to.provider,

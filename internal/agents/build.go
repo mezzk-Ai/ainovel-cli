@@ -74,7 +74,7 @@ func BuildCoordinator(
 		slog.Warn("provider 切换",
 			"module", "agent",
 			"role", ev.Role,
-			"code", ev.Code,
+			"reason", ev.Reason,
 			"from", fmt.Sprintf("%s/%s", ev.FromProvider, ev.FromModel),
 			"to", fmt.Sprintf("%s/%s", ev.ToProvider, ev.ToModel),
 			"err", ev.Err,

@@ -11,7 +11,6 @@ import (
 	"time"
 
 	"github.com/voocel/agentcore"
-	"github.com/voocel/ainovel-cli/internal/apperr"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/utils"
@@ -28,7 +27,7 @@ func errorKind(err error, msg string) string {
 	if err != nil && litellm.IsStreamIdleError(err) {
 		return "stream_idle"
 	}
-	if msg != "" && apperr.IsStreamIdleMessage(msg) {
+	if msg != "" && agentcore.IsStreamIdleMessage(msg) {
 		return "stream_idle"
 	}
 	return ""

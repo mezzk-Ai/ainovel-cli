@@ -7,6 +7,7 @@ import (
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -51,10 +52,10 @@ func (t *PlanChapterTool) Schema() map[string]any {
 func (t *PlanChapterTool) Execute(_ context.Context, args json.RawMessage) (json.RawMessage, error) {
 	plan, err := decodeChapterPlanArgs(args)
 	if err != nil {
-		return nil, fmt.Errorf("invalid args: %w", err)
+		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
 	}
 	if plan.Chapter <= 0 {
-		return nil, fmt.Errorf("chapter must be > 0")
+		return nil, fmt.Errorf("chapter must be > 0: %w", errs.ErrToolArgs)
 	}
 	if t.store.Progress.IsChapterCompleted(plan.Chapter) {
 		return json.Marshal(map[string]any{

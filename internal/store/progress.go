@@ -6,8 +6,8 @@ import (
 	"slices"
 	"strings"
 
-	"github.com/voocel/ainovel-cli/internal/apperr"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/errs"
 )
 
 // ProgressStore 管理创作进度状态。
@@ -351,9 +351,5 @@ func (s *ProgressStore) ValidateChapterWork(chapter int) error {
 	if p.Flow == domain.FlowPolishing {
 		verb = "打磨"
 	}
-	return apperr.New(
-		apperr.CodeToolConflict,
-		"store.validate_chapter_work",
-		fmt.Sprintf("第 %d 章不在待%s队列中，当前队列：%v。请先处理队列内章节，再动新章节。", chapter, verb, p.PendingRewrites),
-	)
+	return fmt.Errorf("第 %d 章不在待%s队列中，当前队列：%v。请先处理队列内章节，再动新章节: %w", chapter, verb, p.PendingRewrites, errs.ErrToolConflict)
 }
