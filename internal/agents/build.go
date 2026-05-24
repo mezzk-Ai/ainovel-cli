@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log/slog"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore"
@@ -17,6 +18,16 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 	"github.com/voocel/ainovel-cli/internal/tools"
 )
+
+// agentToRole 把 subagent name 归一为 ModelSet 认得的 role 名。
+// architect_short / architect_long 都共用同一个 architect role 配置。
+// 跟 host.agentRoleName 同义，因为 build 与 host 互不依赖故各持一份。
+func agentToRole(name string) string {
+	if strings.HasPrefix(name, "architect_") {
+		return "architect"
+	}
+	return name
+}
 
 // subagentMaxRetries 给所有 SubAgentConfig 与 Coordinator 统一的 LLM retry 上限。
 // 退避策略：指数 1s/2s/4s/8s/16s（受 maxDelay 上限约束），优先服从 server Retry-After。
@@ -96,14 +107,21 @@ func BuildCoordinator(
 	bootstrap.LogContextWindowChoice("coordinator", coordinatorModelName, coordinatorContextWindow, coordinatorSource)
 	bootstrap.LogContextWindowChoice("writer", writerModelName, writerContextWindow, writerSource)
 
-	baseOnMsg := store.Sessions.SubAgentLogger()
+	// modelLookup 写入 session 时给每条 assistant 消息附 _meta:{provider,model}，
+	// 让 replay 不再依赖"当前 ModelSet"来反推历史 cost，运行中切换模型也能精确算。
+	modelLookup := func(agentName string) (string, string) {
+		role := agentToRole(agentName)
+		provider, name, _ := models.CurrentSelection(role)
+		return provider, name
+	}
+	baseOnMsg := store.Sessions.SubAgentLogger(modelLookup)
 	onMsg := func(agentName, task string, msg agentcore.AgentMessage) {
 		baseOnMsg(agentName, task, msg)
 		if recordUsage != nil {
 			recordUsage(agentName, msg)
 		}
 	}
-	baseCoordinatorLog := store.Sessions.CoordinatorLogger()
+	baseCoordinatorLog := store.Sessions.CoordinatorLogger(modelLookup)
 	coordinatorOnMessage := func(msg agentcore.AgentMessage) {
 		baseCoordinatorLog(msg)
 		if recordUsage != nil {

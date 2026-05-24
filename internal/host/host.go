@@ -41,6 +41,7 @@ type Host struct {
 	router           *flow.Dispatcher
 	routerDetach     func()
 	usage            *UsageTracker
+	usageCancel      context.CancelFunc // 停掉 autoSaveLoop 并触发最后一次 flush
 
 	events   chan Event
 	streamCh chan string
@@ -82,7 +83,29 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 	}
 	slog.Info("模型就绪", "module", "boot", "summary", models.Summary())
 
-	usage := NewUsageTracker(models)
+	usage := NewUsageTracker(models, store)
+	// 优先读 meta/usage.json；以下情况都走 sessions/*.jsonl 一次性回填：
+	//   - 文件不存在（首次升级到带持久化的版本）
+	//   - schema 版本不匹配（未来升级后丢弃旧格式）
+	//   - 文件存在但损坏 / IO 错误（不能让坏数据让累计永久归零）
+	// 回填完立即 SaveNow，把结果固化下来，下次启动直接 Load 命中。
+	loaded, loadErr := usage.LoadFromStore()
+	if loadErr != nil {
+		slog.Warn("usage 加载失败，将尝试从 sessions 回填", "module", "usage", "err", loadErr)
+	}
+	if !loaded {
+		if n, err := usage.ReplaySessions(cfg.OutputDir); err != nil {
+			slog.Warn("usage replay 失败", "module", "usage", "err", err)
+		} else if n > 0 {
+			slog.Info("usage 从 session 回填完成", "module", "usage", "messages", n)
+			if err := usage.SaveNow(); err != nil {
+				slog.Warn("usage 回填后保存失败", "module", "usage", "err", err)
+			}
+		}
+	}
+	usageCtx, usageCancel := context.WithCancel(context.Background())
+	usage.StartAutoSave(usageCtx)
+
 	coordinator, askUser, restore, coordinatorCtxMgr := agents.BuildCoordinator(cfg, store, models, bundle, usage.Record)
 	store.Signals.ClearStaleSignals()
 
@@ -96,6 +119,7 @@ func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
 		askUser:           askUser,
 		writerRestore:     restore,
 		usage:             usage,
+		usageCancel:       usageCancel,
 		events:            make(chan Event, 100),
 		streamCh:          make(chan string, 256),
 		done:              make(chan struct{}, 4),
@@ -269,12 +293,24 @@ func (h *Host) Abort() bool {
 }
 
 // Close 终止 coordinator 并关闭事件通道。
+//
+// Usage 持久化语义：先取消 autoSaveLoop（它自行 flush 最后一次 dirty 状态），
+// 再补一次同步 SaveNow 收尾。已知缺口：AbortSilent 之后若仍有 in-flight LLM
+// 调用回来，触发的 OnMessage → Record 会更新内存但**不会被持久化**。这部分
+// "最末几百 token" 的丢失在下次启动时会由 session jsonl replay 自动补回。
 func (h *Host) Close() {
 	h.observer.setAborting(true)
 	h.coordinator.AbortSilent()
 	if h.routerDetach != nil {
 		h.routerDetach()
 		h.routerDetach = nil
+	}
+	if h.usageCancel != nil {
+		h.usageCancel()
+		h.usageCancel = nil
+	}
+	if err := h.usage.SaveNow(); err != nil {
+		slog.Warn("usage 退出前落盘失败", "module", "usage", "err", err)
 	}
 	h.closeOnce.Do(func() {
 		close(h.done)

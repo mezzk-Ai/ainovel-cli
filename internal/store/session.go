@@ -26,23 +26,45 @@ func NewSessionStore(io *IO) *SessionStore {
 	return &SessionStore{io: io, seq: make(map[string]int), taskKey: make(map[string]string)}
 }
 
+// ModelLookup 在 logger 写入时按 agent 名查"当时生效"的 provider/model。
+// 用 func 类型而不是 interface，方便调用方用闭包注入归一规则（如 architect_short → architect）。
+// 返回空字符串表示未知，调用方仍照常写入但不带 _meta，replay 时退回 ModelSet fallback。
+type ModelLookup func(agentName string) (provider, model string)
+
 // CoordinatorLogger 返回 coordinator 的 OnMessage 回调。
-func (s *SessionStore) CoordinatorLogger() func(agentcore.AgentMessage) {
+// lookup 可为 nil，此时写入不带 _meta（兼容 cocreate 等无角色场景）。
+func (s *SessionStore) CoordinatorLogger(lookup ModelLookup) func(agentcore.AgentMessage) {
 	return func(msg agentcore.AgentMessage) {
-		if err := s.Log("meta/sessions/coordinator.jsonl", msg); err != nil {
+		var meta *sessionLogMeta
+		if lookup != nil {
+			meta = lookupMeta(lookup, "coordinator")
+		}
+		if err := s.logEntry("meta/sessions/coordinator.jsonl", msg, meta); err != nil {
 			slog.Warn("session log failed", "agent", "coordinator", "err", err)
 		}
 	}
 }
 
 // SubAgentLogger 返回子代理的 OnMessage 回调。
-func (s *SessionStore) SubAgentLogger() func(agentName, task string, msg agentcore.AgentMessage) {
+func (s *SessionStore) SubAgentLogger(lookup ModelLookup) func(agentName, task string, msg agentcore.AgentMessage) {
 	return func(agentName, task string, msg agentcore.AgentMessage) {
 		rel := s.subAgentPath(agentName, task)
-		if err := s.Log(rel, msg); err != nil {
+		var meta *sessionLogMeta
+		if lookup != nil {
+			meta = lookupMeta(lookup, agentName)
+		}
+		if err := s.logEntry(rel, msg, meta); err != nil {
 			slog.Warn("session log failed", "agent", agentName, "err", err)
 		}
 	}
+}
+
+func lookupMeta(lookup ModelLookup, agentName string) *sessionLogMeta {
+	provider, model := lookup(agentName)
+	if provider == "" && model == "" {
+		return nil
+	}
+	return &sessionLogMeta{Provider: provider, Model: model}
 }
 
 // LogCoCreate 追加一条共创对话日志到 meta/sessions/cocreate.jsonl。
@@ -58,13 +80,39 @@ func (s *SessionStore) LogCoCreate(entry any) error {
 }
 
 // Log 追加一条消息到指定路径，自动压缩大内容。
+// 不携带 _meta（向后兼容入口；仅 cocreate 等无角色路径用）。
 func (s *SessionStore) Log(rel string, msg agentcore.AgentMessage) error {
+	return s.logEntry(rel, msg, nil)
+}
+
+// sessionLogEntry 嵌入 agentcore.Message + 可选 _meta。
+// agentcore.Message 是 plain struct（无 MarshalJSON），嵌入后 json marshal
+// 自动展开到顶层；_meta 通过 omitempty 控制——只有 assistant + Usage != nil
+// 时才注入，user/tool 消息不带 _meta，旧 jsonl 解析时 _meta=nil 是 noop。
+type sessionLogEntry struct {
+	agentcore.Message
+	Meta *sessionLogMeta `json:"_meta,omitempty"`
+}
+
+type sessionLogMeta struct {
+	Provider string `json:"provider,omitempty"`
+	Model    string `json:"model,omitempty"`
+}
+
+// logEntry 序列化消息并按需附加 _meta。lookupMeta 已计算好的 meta 传进来；
+// 函数内部判断只对"产生了 LLM 用量"的消息（assistant + Usage != nil）写入 meta，
+// 其它消息保持纯净 agentcore.Message 序列化形态。
+func (s *SessionStore) logEntry(rel string, msg agentcore.AgentMessage, meta *sessionLogMeta) error {
 	m, ok := msg.(agentcore.Message)
 	if !ok {
 		return nil // 非 LLM 消息（如自定义类型）跳过
 	}
 	compacted := compactMessage(m)
-	data, err := json.Marshal(compacted)
+	entry := sessionLogEntry{Message: compacted}
+	if meta != nil && compacted.Role == agentcore.RoleAssistant && compacted.Usage != nil {
+		entry.Meta = meta
+	}
+	data, err := json.Marshal(entry)
 	if err != nil {
 		return fmt.Errorf("marshal session message: %w", err)
 	}

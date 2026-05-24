@@ -1,14 +1,18 @@
 package host
 
 import (
+	"context"
 	"log/slog"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/models"
+	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
 // recentSampleCap 是滑动窗大小：只保留每个 role 最近 N 次调用的 (cacheRead, input)
@@ -35,6 +39,7 @@ type UsageTracker struct {
 	overall  agentTotals
 	perAgent map[string]*agentTotals // key 为 agentRoleName 归一后的 role 名
 	modelSet *bootstrap.ModelSet
+	store    *storepkg.Store // 可为 nil（测试场景），nil 时所有持久化方法静默 noop
 
 	// missingAssistantUsage 累计"收到 assistant 消息但 Usage 为 nil"的次数。
 	// 实测下来主要发生在自建 OpenAI 兼容 backend 没在 streaming 末尾按 OpenAI
@@ -43,6 +48,10 @@ type UsageTracker struct {
 	// usage 不是这边坏了"，而不是死磕缓存面板代码。
 	missingAssistantUsage int
 	loggedMissingUsage    bool // 整个会话只 warn 一次，避免 tui.log 被刷屏
+
+	// saveCh 由 Record 在累加后非阻塞触发；autoSaveLoop 监听并按 debounce 落盘。
+	// buffered=1：连续多次 Record 折叠为一次落盘信号；满了直接丢，下个 tick 一并写。
+	saveCh chan struct{}
 }
 
 // usageSample 是单次 OnMessage 的命中样本，仅记录命中率分子分母。
@@ -67,10 +76,12 @@ type agentTotals struct {
 	sampleIdx    int
 }
 
-func NewUsageTracker(set *bootstrap.ModelSet) *UsageTracker {
+func NewUsageTracker(set *bootstrap.ModelSet, store *storepkg.Store) *UsageTracker {
 	return &UsageTracker{
 		modelSet: set,
+		store:    store,
 		perAgent: make(map[string]*agentTotals, 4),
+		saveCh:   make(chan struct{}, 1),
 	}
 }
 
@@ -94,7 +105,9 @@ func (t *UsageTracker) Record(agentName string, msg agentcore.AgentMessage) {
 		}
 		return
 	}
-	t.accumulate(agentRoleName(agentName), *m.Usage)
+	// 实时路径 modelName="" → resolveCost 从 ModelSet 拿"当前生效"模型；
+	// 切换模型后下一条消息自动用新单价，无需任何额外处理。
+	t.accumulate(agentRoleName(agentName), "", *m.Usage)
 }
 
 // flagMissingUsage 累计一次"看似真 LLM 响应却没拿到 usage"事件，整会话只打一次
@@ -109,16 +122,29 @@ func (t *UsageTracker) flagMissingUsage(agentName string) {
 		slog.Warn("LLM 响应未携带 usage 数据，缓存/成本面板将无累计——通常是上游 streaming 未按 OpenAI include_usage 协议发 final usage chunk",
 			"module", "usage", "agent", agentName)
 	}
+	t.notifyDirty()
+}
+
+// notifyDirty 非阻塞触发一次落盘信号，由 autoSaveLoop 按 debounce 实际写入。
+// 信号通道 buffered=1：连续多次 Record 折叠成一次保存请求即可。
+func (t *UsageTracker) notifyDirty() {
+	if t == nil || t.saveCh == nil {
+		return
+	}
+	select {
+	case t.saveCh <- struct{}{}:
+	default:
+	}
 }
 
 // accumulate 把一条带 Usage 的消息累计到 overall 和 per-role 两份计数。
+// modelName 为空表示"用当前 ModelSet 拿 role 对应模型"（实时路径）；非空表示
+// "强制按指定模型算价"（replay 路径用 session jsonl 里的 _meta.model）。
 // resolveCost 在锁外执行（它只读 modelSet/Registry），锁内只做加法。
-func (t *UsageTracker) accumulate(role string, u agentcore.Usage) {
-	cost, saved, capable := t.resolveCost(role, u)
+func (t *UsageTracker) accumulate(role, modelName string, u agentcore.Usage) {
+	cost, saved, capable := t.resolveCost(role, modelName, u)
 
 	t.mu.Lock()
-	defer t.mu.Unlock()
-
 	addUsage(&t.overall, u, cost, saved, capable)
 
 	per := t.perAgent[role]
@@ -127,6 +153,9 @@ func (t *UsageTracker) accumulate(role string, u agentcore.Usage) {
 		t.perAgent[role] = per
 	}
 	addUsage(per, u, cost, saved, capable)
+	t.mu.Unlock()
+
+	t.notifyDirty()
 }
 
 // addUsage 把单次调用的 token 与成本叠加到一份 totals 上。
@@ -223,6 +252,157 @@ func (t *UsageTracker) MissingAssistantUsage() int {
 	return t.missingAssistantUsage
 }
 
+// ── 持久化 ──
+
+// Snapshot 拷贝当前累计状态为可序列化的 domain.UsageState。
+// 滑动窗 samples 不进 snapshot——它是短期诊断窗口，跨进程意义不大。
+func (t *UsageTracker) Snapshot() domain.UsageState {
+	if t == nil {
+		return domain.UsageState{}
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	state := domain.UsageState{
+		Schema:       domain.UsageSchemaVersion,
+		UpdatedAt:    time.Now(),
+		Overall:      totalsSnapshot(&t.overall),
+		PerAgent:     make(map[string]domain.AgentUsageTotals, len(t.perAgent)),
+		MissingUsage: t.missingAssistantUsage,
+	}
+	for role, v := range t.perAgent {
+		state.PerAgent[role] = totalsSnapshot(v)
+	}
+	return state
+}
+
+// LoadFromStore 从 store.Usage 读取持久化的快照并回填到内存。返回 true 表示
+// 成功加载到了一份非空（schema 匹配）的状态；false 表示无文件或不可用，调用方
+// 应继续走 session replay 一次性回填。
+func (t *UsageTracker) LoadFromStore() (bool, error) {
+	if t == nil || t.store == nil {
+		return false, nil
+	}
+	state, err := t.store.Usage.Load()
+	if err != nil {
+		return false, err
+	}
+	if state == nil {
+		return false, nil
+	}
+	t.applyState(*state)
+	return true, nil
+}
+
+// SaveNow 立刻把当前 snapshot 落盘。autoSaveLoop / Close 路径都通过它写。
+func (t *UsageTracker) SaveNow() error {
+	if t == nil || t.store == nil {
+		return nil
+	}
+	return t.store.Usage.Save(t.Snapshot())
+}
+
+// StartAutoSave 起一个 goroutine，监听 saveCh + debounce 落盘。ctx done 前会
+// 把最后一次未保存的状态 flush 出去。Close 通过 cancel ctx 触发 flush + 退出。
+func (t *UsageTracker) StartAutoSave(ctx context.Context) {
+	if t == nil || t.store == nil {
+		return
+	}
+	go t.autoSaveLoop(ctx)
+}
+
+// autoSaveLoop 把高频 dirty 信号节流为 500ms 一次的落盘。
+//
+// 设计说明：500ms 是经验值——每章 1-2 个 LLM turn，落盘 1-2 次完全可接受；
+// 即便用户手动 ctrl+C 退出来不及触发 timer，ctx 取消路径也会 flush 最后一次。
+// 真正的崩溃（OS kill -9）会丢最近 0.5s 内的累计——上游 session jsonl 仍是
+// 完整事实，下次启动会从 sessions/ replay 修补差额。
+func (t *UsageTracker) autoSaveLoop(ctx context.Context) {
+	const debounce = 500 * time.Millisecond
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	defer timer.Stop()
+
+	var pending bool
+	flush := func() {
+		if err := t.SaveNow(); err != nil {
+			slog.Warn("usage 落盘失败", "module", "usage", "err", err)
+		}
+		pending = false
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			if pending {
+				flush()
+			}
+			return
+		case <-t.saveCh:
+			if pending {
+				if !timer.Stop() {
+					select {
+					case <-timer.C:
+					default:
+					}
+				}
+			}
+			timer.Reset(debounce)
+			pending = true
+		case <-timer.C:
+			flush()
+		}
+	}
+}
+
+// applyState 把持久化快照写回内存。仅在启动时调用（LoadFromStore / replay 后），
+// 此时尚未启动 autoSaveLoop / Record 也不会并发触发，可不持锁；但保留 mu 以防
+// 测试或未来调用顺序变化引入并发。
+func (t *UsageTracker) applyState(state domain.UsageState) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.overall = totalsFromState(state.Overall)
+	if state.PerAgent == nil {
+		t.perAgent = make(map[string]*agentTotals, 4)
+	} else {
+		t.perAgent = make(map[string]*agentTotals, len(state.PerAgent))
+		for role, v := range state.PerAgent {
+			tot := totalsFromState(v)
+			t.perAgent[role] = &tot
+		}
+	}
+	t.missingAssistantUsage = state.MissingUsage
+}
+
+// totalsSnapshot 把内存 agentTotals 拷贝成可持久化 domain.AgentUsageTotals。
+// samples ring buffer 故意不带出去——见 UsageState 注释。
+func totalsSnapshot(t *agentTotals) domain.AgentUsageTotals {
+	if t == nil {
+		return domain.AgentUsageTotals{}
+	}
+	return domain.AgentUsageTotals{
+		Input:        t.Input,
+		Output:       t.Output,
+		CacheRead:    t.CacheRead,
+		CacheWrite:   t.CacheWrite,
+		Cost:         t.Cost,
+		Saved:        t.Saved,
+		CacheCapable: t.CacheCapable,
+	}
+}
+
+// totalsFromState 把持久化形态还原为内存 agentTotals。samples 留空，重启后
+// 重新从 0 开始积累，几轮 Record 后即可恢复"近 N 次命中率"语义。
+func totalsFromState(s domain.AgentUsageTotals) agentTotals {
+	return agentTotals{
+		Input:        s.Input,
+		Output:       s.Output,
+		CacheRead:    s.CacheRead,
+		CacheWrite:   s.CacheWrite,
+		Cost:         s.Cost,
+		Saved:        s.Saved,
+		CacheCapable: s.CacheCapable,
+	}
+}
+
 // AgentUsage 是一个 agent 的累计用量快照（向 UI 暴露）。
 type AgentUsage struct {
 	Role            string
@@ -278,9 +458,11 @@ func (t *UsageTracker) PerAgent() []AgentUsage {
 //   - cost: 注册表命中按 4 项累乘；未命中回落 provider 自带 cost
 //   - saved: 仅注册表命中、CacheRead > 0、且 InputCost > CacheReadCost 时 > 0
 //   - capable: 注册表命中且该模型 CacheReadCostPer1M > 0 → 已知支持 prompt caching
-func (t *UsageTracker) resolveCost(role string, u agentcore.Usage) (cost, saved float64, capable bool) {
-	modelName := ""
-	if t.modelSet != nil {
+//
+// modelName 优先用调用方传入的（replay 时来自 session jsonl 的 _meta.model）；
+// 留空时从 ModelSet 按 role 查当前生效模型（实时路径）。
+func (t *UsageTracker) resolveCost(role, modelName string, u agentcore.Usage) (cost, saved float64, capable bool) {
+	if modelName == "" && t.modelSet != nil {
 		_, modelName, _ = t.modelSet.CurrentSelection(role)
 	}
 	if entry, ok := models.DefaultRegistry().Resolve(modelName); ok {

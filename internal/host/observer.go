@@ -802,12 +802,6 @@ func (o *observer) emitFallbackStreamHeader(tool string) {
 func streamHeaderFallback(tool string) string {
 	label := tool
 	switch tool {
-	case "read_chapter":
-		label = "读章节"
-	case "novel_context":
-		label = "查询上下文"
-	case "check_consistency":
-		label = "一致性检查"
 	case "ask_user":
 		label = "向用户提问"
 	}

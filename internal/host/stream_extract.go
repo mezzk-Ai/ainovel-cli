@@ -28,6 +28,9 @@ var toolDisplays = map[string]toolDisplay{
 	"save_arc_summary":    {header: "✻ 弧摘要"},
 	"save_volume_summary": {header: "✻ 卷摘要"},
 	"save_foundation":     {header: "✻ 设定"},
+	"read_chapter":        {header: "✻ 读章节"},
+	"check_consistency":   {header: "✻ 一致性检查"},
+	"novel_context":       {header: "✻ 查询上下文"},
 }
 
 type toolDisplay struct {
@@ -341,6 +344,13 @@ func (e *jsonFieldExtractor) beginNested(kind byte, out *strings.Builder) {
 func (e *jsonFieldExtractor) closeContainer(out *strings.Builder) {
 	e.pop()
 	if len(e.stack) == 0 {
+		// 空 args（如 novel_context 不传参）兜底：emitKeyLine 没机会输出 header，
+		// 这里补一次，避免落到"既没标题也没内容"。
+		if !e.started && e.cfg.nakedKey == "" && e.cfg.header != "" {
+			out.WriteString(e.cfg.header)
+			out.WriteByte('\n')
+			e.started = true
+		}
 		// 收尾换行让面板与下一段输出之间有清晰边界
 		if e.started {
 			out.WriteByte('\n')

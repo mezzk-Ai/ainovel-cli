@@ -166,6 +166,35 @@ func TestExtract_EditChapter(t *testing.T) {
 	mustContain(t, out, "replace_all: false")
 }
 
+// ── 读类工具：args 信息密度低但 header + 关键字段仍应可见 ──
+
+func TestExtract_ReadChapter(t *testing.T) {
+	in := `{"chapter":234,"source":"final"}`
+	out := feedAll(t, "read_chapter", in)
+	mustContain(t, out, "✻ 读章节")
+	mustContain(t, out, "chapter: 234")
+	mustContain(t, out, "source: final")
+}
+
+func TestExtract_CheckConsistency(t *testing.T) {
+	out := feedAll(t, "check_consistency", `{"chapter":234}`)
+	mustContain(t, out, "✻ 一致性检查")
+	mustContain(t, out, "chapter: 234")
+}
+
+// 空 args 兜底：coordinator 调 novel_context 不传参时 args 是 {}，
+// 不能完全静默，至少要输出 header 让用户感知调用。
+func TestExtract_NovelContextEmptyArgs(t *testing.T) {
+	out := feedAll(t, "novel_context", `{}`)
+	mustContain(t, out, "✻ 查询上下文")
+}
+
+func TestExtract_NovelContextWithChapter(t *testing.T) {
+	out := feedAll(t, "novel_context", `{"chapter":234}`)
+	mustContain(t, out, "✻ 查询上下文")
+	mustContain(t, out, "chapter: 234")
+}
+
 // ── 裸流模式 ──
 
 func TestExtract_DraftChapterRawMarkdown(t *testing.T) {

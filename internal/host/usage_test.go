@@ -51,7 +51,7 @@ func Test_pushSample_RingBuffer(t *testing.T) {
 // Test_UsageTracker_RecordAccumulates 验证 Record 多 role 累计正确，
 // 整体合并 = 所有 role 之和；per-role 各自独立。
 func Test_UsageTracker_RecordAccumulates(t *testing.T) {
-	tk := NewUsageTracker(nil) // modelSet=nil → 走 provider Cost 兜底，不影响累计逻辑
+	tk := NewUsageTracker(nil, nil) // modelSet=nil → 走 provider Cost 兜底，不影响累计逻辑
 
 	tk.Record("writer", makeUsageMsg(1000, 800, 0, 200))
 	tk.Record("writer", makeUsageMsg(1500, 1200, 100, 300))
@@ -81,7 +81,7 @@ func Test_UsageTracker_RecordAccumulates(t *testing.T) {
 // Test_UsageTracker_ArchitectAliasNormalized 验证 architect_short/mid/long
 // 都归一到同一个 "architect" key（避免被 /model 切换的子角色拆成多行）。
 func Test_UsageTracker_ArchitectAliasNormalized(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 	tk.Record("architect_short", makeUsageMsg(100, 50, 0, 20))
 	tk.Record("architect_mid", makeUsageMsg(200, 100, 0, 40))
 	tk.Record("architect_long", makeUsageMsg(300, 150, 0, 60))
@@ -101,7 +101,7 @@ func Test_UsageTracker_ArchitectAliasNormalized(t *testing.T) {
 // Test_UsageTracker_RecentWindowReflectsLatest 验证滑动窗反映"最近 N 次"，
 // 不被早期低命中拖累 — 这正是 P1 要解决的"前期拖累 vs 稳态低命中"问题。
 func Test_UsageTracker_RecentWindowReflectsLatest(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 
 	// 前 5 次极低命中（首章场景）
 	for i := 0; i < 5; i++ {
@@ -188,7 +188,7 @@ func Test_computeSaved(t *testing.T) {
 //
 // 通过构造 perAgent 直接赋值模拟（resolveCost 路径需要 ModelSet+Registry，集成层已覆盖）。
 func Test_UsageTracker_CacheCapableSticky(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 
 	// 模拟"曾经跑过支持 cache 的模型 + 命中过"
 	tk.perAgent["writer"] = &agentTotals{
@@ -212,7 +212,7 @@ func Test_UsageTracker_CacheCapableSticky(t *testing.T) {
 
 // Test_UsageTracker_PerAgentSkipsZero 验证未消费 token 的 role 不出现在 PerAgent 中。
 func Test_UsageTracker_PerAgentSkipsZero(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 	// 构造一个 role 但不消费 token（极端情况）
 	tk.perAgent["ghost"] = &agentTotals{}
 	tk.Record("writer", makeUsageMsg(100, 50, 0, 20))
@@ -231,7 +231,7 @@ func Test_UsageTracker_PerAgentSkipsZero(t *testing.T) {
 //     chunk 的典型表现。其它情形（user/tool 消息、空 content 的 assistant）
 //     都不算 missing。
 func Test_UsageTracker_MissingAssistantUsageCounted(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 
 	withContent := func(text string) agentcore.Message {
 		return agentcore.Message{
@@ -266,7 +266,7 @@ func Test_UsageTracker_MissingAssistantUsageCounted(t *testing.T) {
 // CacheRead 或 CacheWrite > 0，就证明该模型客观支持 prompt cache，per-role 行
 // 不该显示"未启用"。
 func Test_UsageTracker_CacheCapableFromFacts(t *testing.T) {
-	tk := NewUsageTracker(nil) // modelSet=nil → resolveCost 永远 capable=false
+	tk := NewUsageTracker(nil, nil) // modelSet=nil → resolveCost 永远 capable=false
 
 	// 一次有 CacheWrite（模拟首次写入 cache，注册表没标 capable，但事实证明支持）
 	tk.Record("writer", makeUsageMsg(1000, 0, 200, 100))
@@ -292,7 +292,7 @@ func Test_UsageTracker_CacheCapableFromFacts(t *testing.T) {
 // 即使将来某个 adapter 把 usage 装配到非 assistant 角色的 message 上，
 // 仍能正确累计。守住"装配规则与累加规则解耦"的契约。
 func Test_UsageTracker_AccumulatesAnyRoleWithUsage(t *testing.T) {
-	tk := NewUsageTracker(nil)
+	tk := NewUsageTracker(nil, nil)
 	// 构造一条理论上不太常见的、带 Usage 的非 assistant 消息
 	hypothetical := agentcore.Message{
 		Role:  agentcore.RoleSystem,
