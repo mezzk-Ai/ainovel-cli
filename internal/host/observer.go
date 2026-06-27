@@ -71,6 +71,8 @@ type observer struct {
 	currentDispatchTarget string                     // 当前正在执行的 subagent 名（handleToolEnd 时 Args 可能为空）
 	toolStarts            map[string]*activeCall     // agent → 进行中的 TOOL 调用
 	streamExtractors      map[string]*agentExtractor // agent → 当前工具调用 JSON 参数的内容抽取器
+	streamArgPrefixes     map[string]string          // agent/tool → 参数流前缀，用于提前识别轻量标签
+	streamArgLabels       map[string]string          // agent/tool → 已从参数流提前识别出的展示名
 	streamHasContent      bool                       // 当前 streamRound 是否已输出过内容（判断是否需要段落分隔）
 	streamLastByte        byte                       // 最近一次流式输出的末字节（用于精确补齐换行）
 }
@@ -104,6 +106,8 @@ func newObserver(coordinator *agentcore.Agent, s *storepkg.Store, emitEv func(Ev
 		dispatchStarts:      make(map[string]*activeCall),
 		toolStarts:          make(map[string]*activeCall),
 		streamExtractors:    make(map[string]*agentExtractor),
+		streamArgPrefixes:   make(map[string]string),
+		streamArgLabels:     make(map[string]string),
 	}
 	o.unsub = coordinator.Subscribe(o.handle)
 	return o
@@ -202,9 +206,11 @@ func (o *observer) handle(ev agentcore.Event) {
 			fullMsg := ev.Err.Error()
 			if o.isCancellationNoise(ev.Err, fullMsg) {
 				// 用户主动 abort 衍生的 ctx-cancel 错误；已有"用户手动暂停"事件，不再重复刷屏。
+				o.flushActiveCalls(true)
 				slog.Debug("suppressed cancel-derived error", "module", "agent", "msg", fullMsg)
 				return
 			}
+			o.flushActiveCalls(true)
 			errEv := Event{
 				Time:     time.Now(),
 				Category: "ERROR",
@@ -223,8 +229,8 @@ func (o *observer) handleMessageUpdate(ev agentcore.Event) {
 	if ev.Delta == "" {
 		return
 	}
-	// Coordinator 的 tool-call 参数是给 subagent 的任务 JSON，没有可读内容，直接丢弃。
 	if ev.DeltaKind == agentcore.DeltaToolCall {
+		o.handleCoordinatorToolDelta(ev)
 		return
 	}
 	o.emitStreamDelta(ev.Delta, ev.DeltaKind == agentcore.DeltaThinking)
@@ -243,19 +249,19 @@ func (o *observer) handleToolStart(ev agentcore.Event) {
 		if target == "" {
 			target = "subagent"
 		}
-		dispatchSummary := target
-		if sub.task != "" {
-			firstLine := strings.TrimSpace(strings.SplitN(sub.task, "\n", 2)[0])
-			if firstLine != "" {
-				dispatchSummary += "（" + truncate(firstLine, 30) + "）"
-			}
-		}
+		dispatchSummary := dispatchSummary(target, sub.task)
 		o.updateAgent(agent, func(a *agentState) {
 			a.state = "working"
 			a.tool = ev.Tool
 			a.summary = fmt.Sprintf("%s → %s", agent, dispatchSummary)
 		})
 		o.currentDispatchTarget = target
+		if call, ok := o.dispatchStarts["subagent"]; ok {
+			delete(o.dispatchStarts, "subagent")
+			o.dispatchStarts[target] = call
+			o.updateDispatchSummary(target, dispatchSummary)
+			return
+		}
 		id := nextEventID()
 		o.dispatchStarts[target] = &activeCall{id: id, start: time.Now(), summary: dispatchSummary}
 		o.emitAndLog(Event{
@@ -271,6 +277,10 @@ func (o *observer) handleToolStart(ev agentcore.Event) {
 
 	// coordinator 自身工具（进行中）
 	toolName := displayToolName(ev.Tool, ev.Args)
+	if _, ok := o.toolStarts[agent]; ok {
+		o.updateToolCallSummary(agent, ev.Tool, toolName)
+		return
+	}
 	o.updateAgent(agent, func(a *agentState) {
 		a.state = "working"
 		a.tool = ev.Tool
@@ -306,20 +316,8 @@ func (o *observer) handleToolUpdate(ev agentcore.Event) {
 			break
 		}
 		toolName := displayToolName(ev.Progress.Tool, ev.Progress.Args)
-		if call, ok := o.toolStarts[ev.Progress.Agent]; ok {
-			if toolName != "" && toolName != call.summary {
-				call.summary = toolName
-				// 发 summary-only 更新事件（同 ID），TUI applyEvent 会合并
-				o.emitEv(Event{
-					ID:       call.id,
-					Time:     call.start,
-					Category: "TOOL",
-					Agent:    ev.Progress.Agent,
-					Summary:  toolName,
-					Level:    "info",
-					Depth:    call.depth,
-				})
-			}
+		if _, ok := o.toolStarts[ev.Progress.Agent]; ok {
+			o.updateToolCallSummary(ev.Progress.Agent, ev.Progress.Tool, toolName)
 			o.updateAgent(ev.Progress.Agent, func(a *agentState) {
 				a.state = "working"
 				a.tool = ev.Progress.Tool
@@ -447,6 +445,7 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 	// （否则 draft_chapter 这类工具的"进行中"只在真实 Execute 的几十毫秒里显示）。
 	// 真正的 ProgressToolStart 到来时识别到 toolStarts 已有记录，只会补齐 summary。
 	o.ensureSubagentToolStarted(p.Agent, p.Tool)
+	o.updateToolCallSummaryFromDelta(p.Agent, p.Tool, p.Delta)
 
 	cur, ok := o.streamExtractors[p.Agent]
 	// 同工具调用 args 已闭合（顶层 } 命中）后，仍可能收到 trailing delta：
@@ -484,6 +483,233 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 		}
 		o.emitStreamDelta(emitted, false)
 	}
+}
+
+func (o *observer) handleCoordinatorToolDelta(ev agentcore.Event) {
+	msg, ok := ev.Message.(agentcore.Message)
+	if !ok {
+		return
+	}
+	call, ok := latestToolCall(msg)
+	if !ok || call.Name == "" {
+		return
+	}
+	if call.Name == "subagent" {
+		o.ensureCoordinatorDispatchStarted(call)
+		o.updateCoordinatorDispatchSummaryFromDelta(ev.Delta)
+		return
+	}
+	o.ensureCoordinatorToolStarted(call.Name)
+	o.updateToolCallSummaryFromDelta("coordinator", call.Name, ev.Delta)
+}
+
+func latestToolCall(msg agentcore.Message) (agentcore.ToolCall, bool) {
+	calls := msg.ToolCalls()
+	if len(calls) == 0 {
+		return agentcore.ToolCall{}, false
+	}
+	return calls[len(calls)-1], true
+}
+
+func (o *observer) ensureCoordinatorToolStarted(tool string) {
+	const agent = "coordinator"
+	if tool == "" {
+		return
+	}
+	if _, ok := o.toolStarts[agent]; ok {
+		return
+	}
+	o.resetStreamArgLabel(agent, tool)
+	id := nextEventID()
+	o.toolStarts[agent] = &activeCall{id: id, start: time.Now(), summary: tool}
+	o.updateAgent(agent, func(a *agentState) {
+		a.state = "working"
+		a.tool = tool
+		a.summary = fmt.Sprintf("%s → %s", agent, tool)
+	})
+	o.emitAndLog(Event{
+		ID:       id,
+		Time:     time.Now(),
+		Category: "TOOL",
+		Agent:    agent,
+		Summary:  tool,
+		Level:    "info",
+	})
+	o.emitFallbackStreamHeader(tool)
+}
+
+func (o *observer) ensureCoordinatorDispatchStarted(call agentcore.ToolCall) {
+	if _, ok := o.dispatchStarts["subagent"]; ok {
+		return
+	}
+	o.resetStreamArgLabel("coordinator", call.Name)
+	id := nextEventID()
+	o.dispatchStarts["subagent"] = &activeCall{id: id, start: time.Now(), summary: "subagent"}
+	o.currentDispatchTarget = "subagent"
+	o.updateAgent("coordinator", func(a *agentState) {
+		a.state = "working"
+		a.tool = call.Name
+		a.summary = "coordinator → subagent"
+	})
+	o.emitAndLog(Event{
+		ID:       id,
+		Time:     time.Now(),
+		Category: "DISPATCH",
+		Agent:    "coordinator",
+		Summary:  "subagent",
+		Level:    "info",
+	})
+}
+
+func (o *observer) updateCoordinatorDispatchSummaryFromDelta(delta string) {
+	const key = "subagent"
+	prefix := o.streamArgPrefixes[streamArgKey("coordinator", key)] + delta
+	if len(prefix) > 1024 {
+		prefix = prefix[:1024]
+	}
+	o.streamArgPrefixes[streamArgKey("coordinator", key)] = prefix
+
+	agent := firstJSONStringField(prefix, "agent")
+	if agent == "" {
+		return
+	}
+	task := firstJSONStringField(prefix, "task")
+	summary := dispatchSummary(agent, task)
+	labelKey := streamArgKey("coordinator", key)
+	if o.streamArgLabels[labelKey] == summary {
+		return
+	}
+	o.streamArgLabels[labelKey] = summary
+	o.updateDispatchSummary("subagent", summary)
+}
+
+func dispatchSummary(agent, task string) string {
+	if agent == "" {
+		agent = "subagent"
+	}
+	if task == "" {
+		return agent
+	}
+	firstLine := strings.TrimSpace(strings.SplitN(task, "\n", 2)[0])
+	if firstLine == "" {
+		return agent
+	}
+	return agent + "（" + truncate(firstLine, 30) + "）"
+}
+
+func (o *observer) updateToolCallSummary(agent, tool, summary string) {
+	if agent == "" || summary == "" {
+		return
+	}
+	call, ok := o.toolStarts[agent]
+	if !ok || call.summary == summary {
+		return
+	}
+	call.summary = summary
+	o.emitEv(Event{
+		ID:       call.id,
+		Time:     call.start,
+		Category: "TOOL",
+		Agent:    agent,
+		Summary:  summary,
+		Level:    "info",
+		Depth:    call.depth,
+	})
+	o.updateAgent(agent, func(a *agentState) {
+		a.state = "working"
+		a.tool = tool
+		a.summary = fmt.Sprintf("%s → %s", agent, summary)
+	})
+}
+
+func (o *observer) updateDispatchSummary(target, summary string) {
+	if target == "" || summary == "" {
+		return
+	}
+	call, ok := o.dispatchStarts[target]
+	if !ok || call.summary == summary {
+		return
+	}
+	call.summary = summary
+	o.emitEv(Event{
+		ID:       call.id,
+		Time:     call.start,
+		Category: "DISPATCH",
+		Agent:    "coordinator",
+		Summary:  summary,
+		Level:    "info",
+		Depth:    call.depth,
+	})
+}
+
+func (o *observer) updateToolCallSummaryFromDelta(agent, tool, delta string) {
+	key := streamArgKey(agent, tool)
+	prefix := o.streamArgPrefixes[key] + delta
+	if len(prefix) > 512 {
+		prefix = prefix[:512]
+	}
+	o.streamArgPrefixes[key] = prefix
+
+	summary := streamedToolLabel(tool, prefix)
+	if summary == "" {
+		return
+	}
+	if o.streamArgLabels[key] == summary {
+		return
+	}
+	o.streamArgLabels[key] = summary
+	o.updateToolCallSummary(agent, tool, summary)
+}
+
+func streamArgKey(agent, tool string) string {
+	return agent + "\x00" + tool
+}
+
+func streamedToolLabel(tool, delta string) string {
+	if tool != "save_foundation" || delta == "" {
+		return ""
+	}
+	typ := firstJSONStringField(delta, "type")
+	if typ == "" {
+		return ""
+	}
+	return fmt.Sprintf("%s[%s]", tool, typ)
+}
+
+func firstJSONStringField(raw, field string) string {
+	needle := `"` + field + `"`
+	idx := strings.Index(raw, needle)
+	if idx < 0 {
+		return ""
+	}
+	rest := raw[idx+len(needle):]
+	colon := strings.IndexByte(rest, ':')
+	if colon < 0 {
+		return ""
+	}
+	rest = strings.TrimLeft(rest[colon+1:], " \t\r\n")
+	if len(rest) == 0 || rest[0] != '"' {
+		return ""
+	}
+	var value strings.Builder
+	escape := false
+	for i := 1; i < len(rest); i++ {
+		c := rest[i]
+		if escape {
+			value.WriteByte(c)
+			escape = false
+			continue
+		}
+		switch c {
+		case '\\':
+			escape = true
+		case '"':
+			return value.String()
+		default:
+			value.WriteByte(c)
+		}
+	}
+	return ""
 }
 
 func (o *observer) handleThinkingProgress(ev agentcore.Event) {
@@ -562,6 +788,45 @@ func (o *observer) handleContextProgress(ev agentcore.Event) {
 	}
 }
 
+func (o *observer) emitCallFinish(call *activeCall, category, agentName string, failed bool) {
+	if call == nil {
+		return
+	}
+	level := "success"
+	if failed {
+		level = "error"
+	}
+	finishEv := Event{
+		ID:         call.id,
+		Time:       call.start,
+		FinishedAt: time.Now(),
+		Failed:     failed,
+		Category:   category,
+		Agent:      agentName,
+		Summary:    call.summary,
+		Level:      level,
+		Depth:      call.depth,
+		Duration:   time.Since(call.start),
+	}
+	o.emitEv(finishEv)
+	o.persistEvent(finishEv)
+}
+
+func (o *observer) flushActiveCalls(failed bool) {
+	for target, call := range o.dispatchStarts {
+		o.emitCallFinish(call, "DISPATCH", target, failed)
+		delete(o.dispatchStarts, target)
+	}
+	for agent, call := range o.toolStarts {
+		o.emitCallFinish(call, "TOOL", agent, failed)
+		delete(o.toolStarts, agent)
+	}
+	clear(o.streamExtractors)
+	clear(o.streamArgPrefixes)
+	clear(o.streamArgLabels)
+	o.currentDispatchTarget = ""
+}
+
 func (o *observer) handleToolEnd(ev agentcore.Event) {
 	agent := agentFromEvent(ev)
 	// 工具结束：把状态切回 idle，否则侧边栏会永远停在 working。
@@ -610,27 +875,7 @@ func (o *observer) handleToolEnd(ev agentcore.Event) {
 
 	// 统一的调用完成态（成功/失败），通过同 ID 更新原行
 	emitFinish := func(call *activeCall, category, agentName string, failed bool) {
-		if call == nil {
-			return
-		}
-		level := "success"
-		if failed {
-			level = "error"
-		}
-		finishEv := Event{
-			ID:         call.id,
-			Time:       call.start,
-			FinishedAt: time.Now(),
-			Failed:     failed,
-			Category:   category,
-			Agent:      agentName,
-			Summary:    call.summary,
-			Level:      level,
-			Depth:      call.depth,
-			Duration:   time.Since(call.start),
-		}
-		o.emitEv(finishEv)
-		o.persistEvent(finishEv)
+		o.emitCallFinish(call, category, agentName, failed)
 	}
 	emitDispatchFinish := func(failed bool) {
 		emitFinish(dispatchCall, "DISPATCH", dispatchTarget, failed)
@@ -750,6 +995,7 @@ func (o *observer) ensureSubagentToolStarted(agent, tool string) {
 	if _, ok := o.toolStarts[agent]; ok {
 		return // 已有进行中调用，幂等
 	}
+	o.resetStreamArgLabel(agent, tool)
 	id := nextEventID()
 	o.toolStarts[agent] = &activeCall{
 		id:      id,
@@ -771,6 +1017,12 @@ func (o *observer) ensureSubagentToolStarted(agent, tool string) {
 		a.tool = tool
 	})
 	o.emitFallbackStreamHeader(tool)
+}
+
+func (o *observer) resetStreamArgLabel(agent, tool string) {
+	key := streamArgKey(agent, tool)
+	delete(o.streamArgPrefixes, key)
+	delete(o.streamArgLabels, key)
 }
 
 // emitFallbackStreamHeader 给未配置 extractor 的工具补一行 ✻ 标题到流面板。
