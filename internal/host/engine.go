@@ -12,7 +12,6 @@ import (
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/subagent"
-	"github.com/voocel/litellm"
 
 	"github.com/voocel/ainovel-cli/internal/arbiter"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -450,7 +449,7 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 // 拦截本身不提前熔断——换上下文重派对它有真实自愈率(ch21-24 实测),
 // 走完"免费重试→仲裁"再暂停。
 func contentFilterAdvice(werr error) string {
-	if !litellm.IsContentFilterError(werr) {
+	if !errors.Is(werr, agentcore.ErrProviderContentFilter) {
 		return ""
 	}
 	return "。这是服务商内容审核拦截(非本地错误),可选: /model 切到无审核层的服务商后输入「继续」;或修改本章草稿(drafts/)措辞后再继续;原样重试大概率仍被拦"
