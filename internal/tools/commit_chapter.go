@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log/slog"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/voocel/agentcore/schema"
@@ -292,6 +293,8 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 		HookType:       a.HookType,
 		DominantStrand: a.DominantStrand,
 		Feedback:       a.Feedback,
+		// (feedback 同时持久化到反馈池,见下方 persistFeedback——返回值只是镜像,
+		// architect 经 novel_context 消费的是 store 事实)
 		ArcEnd:         arcEnd,
 		VolumeEnd:      volumeEnd,
 		Volume:         vol,
@@ -308,6 +311,19 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 	if p, _ := t.store.Progress.Load(); p != nil {
 		result.Flow = string(p.Flow)
+	}
+
+	// 8.5 反馈池:writer 对大纲的反馈落盘,architect 下次结构操作经 novel_context
+	// 消费(仅返回值会随 run 结束丢失)。附属事实 best-effort,不阻断提交。
+	// 仅分层书持久化:非分层书没有结构操作,落盘只会制造永远无消费者的垃圾事实
+	// (返回值镜像仍保留,诊断可见)。
+	layered := progress != nil && progress.Layered
+	if layered && a.Feedback != nil && (strings.TrimSpace(a.Feedback.Deviation) != "" || strings.TrimSpace(a.Feedback.Suggestion) != "") {
+		if err := t.store.Outline.AppendOutlineFeedback(store.ChapterFeedback{
+			Chapter: a.Chapter, Deviation: a.Feedback.Deviation, Suggestion: a.Feedback.Suggestion,
+		}); err != nil {
+			slog.Warn("大纲反馈落盘失败", "module", "tools", "chapter", a.Chapter, "err", err)
+		}
 	}
 
 	pending.Stage = domain.CommitStageProgressMarked
@@ -332,7 +348,12 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 	}
 
 	// 11. 机械规则检查（仅返事实，不阻断）
-	violations := t.checkRules(content, wordCount)
+	violations := t.checkRules(content)
+	// 持久化违规事实:editor 评审经 novel_context 消费(返回值只是镜像——
+	// writer 在 commit 后立即硬停,返回值无人可读)。best-effort。
+	if err := t.store.World.SaveRuleViolations(a.Chapter, violations); err != nil {
+		slog.Warn("机械违规落盘失败", "module", "tools", "chapter", a.Chapter, "err", err)
+	}
 	return json.Marshal(commitOutput{CommitResult: result, RuleViolations: violations})
 }
 
@@ -346,13 +367,13 @@ func (t *CommitChapterTool) appendCommitCheckpoint(chapter int) error {
 
 // checkRules 对章节正文做机械检查：内置产品底线 Lint（机制残留，始终执行）
 // + 用户规则 Check（读本书快照的 structured；快照缺失退到内置默认，保证机械底线始终在）。
-func (t *CommitChapterTool) checkRules(text string, wordCount int) []rules.Violation {
+func (t *CommitChapterTool) checkRules(text string) []rules.Violation {
 	violations := rules.Lint(text)
 	structured := rules.SystemDefaults().Structured
 	if snap, err := t.store.UserRules.Load(); err == nil && snap != nil {
 		structured = snap.Structured
 	}
-	return append(violations, rules.Check(text, wordCount, structured)...)
+	return append(violations, rules.Check(text, structured)...)
 }
 
 // executeRewriteCommit 处理打磨/重写章节的提交：覆盖终稿与摘要、更新字数、drain 队列。
@@ -461,8 +482,11 @@ func (t *CommitChapterTool) executeRewriteCommit(
 		}
 	}
 
-	// 同主路径：rewrite/polish 也做机械检查并附 rule_violations
-	violations := t.checkRules(content, wordCount)
+	// 同主路径：rewrite/polish 也做机械检查并持久化(重写后落新记录,旧违规视为已清)
+	violations := t.checkRules(content)
+	if err := t.store.World.SaveRuleViolations(chapter, violations); err != nil {
+		slog.Warn("机械违规落盘失败", "module", "tools", "chapter", chapter, "err", err)
+	}
 	return json.Marshal(map[string]any{
 		"chapter":         chapter,
 		"rewritten":       true,

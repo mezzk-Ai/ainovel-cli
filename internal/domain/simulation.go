@@ -108,10 +108,9 @@ type SimulationReaderEngagement struct {
 }
 
 type SimulationRoleGuidance struct {
-	Coordinator []string `json:"coordinator,omitempty"`
-	Architect   []string `json:"architect,omitempty"`
-	Writer      []string `json:"writer,omitempty"`
-	Editor      []string `json:"editor,omitempty"`
+	Architect []string `json:"architect,omitempty"`
+	Writer    []string `json:"writer,omitempty"`
+	Editor    []string `json:"editor,omitempty"`
 }
 
 type SimulationCompactProfile struct {
@@ -234,10 +233,9 @@ func compactSimulationSynthesis(s SimulationSynthesis) SimulationSynthesis {
 			AntiPatterns:       compactSimulationItems(s.ReaderEngagement.AntiPatterns),
 		},
 		RoleGuidance: SimulationRoleGuidance{
-			Coordinator: compactSimulationItems(s.RoleGuidance.Coordinator),
-			Architect:   compactSimulationItems(s.RoleGuidance.Architect),
-			Writer:      compactSimulationItems(s.RoleGuidance.Writer),
-			Editor:      compactSimulationItems(s.RoleGuidance.Editor),
+			Architect: compactSimulationItems(s.RoleGuidance.Architect),
+			Writer:    compactSimulationItems(s.RoleGuidance.Writer),
+			Editor:    compactSimulationItems(s.RoleGuidance.Editor),
 		},
 	}
 }
@@ -297,10 +295,9 @@ func MergeSimulationSynthesis(a, b SimulationSynthesis) SimulationSynthesis {
 			AntiPatterns:       mergeStringSets(a.ReaderEngagement.AntiPatterns, b.ReaderEngagement.AntiPatterns),
 		},
 		RoleGuidance: SimulationRoleGuidance{
-			Coordinator: mergeStringSets(a.RoleGuidance.Coordinator, b.RoleGuidance.Coordinator),
-			Architect:   mergeStringSets(a.RoleGuidance.Architect, b.RoleGuidance.Architect),
-			Writer:      mergeStringSets(a.RoleGuidance.Writer, b.RoleGuidance.Writer),
-			Editor:      mergeStringSets(a.RoleGuidance.Editor, b.RoleGuidance.Editor),
+			Architect: mergeStringSets(a.RoleGuidance.Architect, b.RoleGuidance.Architect),
+			Writer:    mergeStringSets(a.RoleGuidance.Writer, b.RoleGuidance.Writer),
+			Editor:    mergeStringSets(a.RoleGuidance.Editor, b.RoleGuidance.Editor),
 		},
 	}
 }

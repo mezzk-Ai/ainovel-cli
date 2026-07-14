@@ -1,6 +1,8 @@
 # 重构提案：Hybrid Coordinator — Host 路由 × LLM 裁定
 
-> 状态：**已采纳并落地**（2026-04-20）
+> **历史文档，已废弃。** Hybrid Coordinator 于 2026-07-12 被 Engine + Arbiter 架构取代；现行设计见 `docs/architecture.md`、`docs/engine-rfc.md`。本文仅保留决策演进记录，不得作为实现依据。
+>
+> 原状态：**已采纳并落地**（2026-04-20）
 > 调研时间：2026-04-20
 > 对应现行文档：`docs/architecture.md` §2 / §3 / §7 / §8 / §13 已同步更新
 >

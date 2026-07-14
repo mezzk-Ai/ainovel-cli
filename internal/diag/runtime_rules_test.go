@@ -7,8 +7,8 @@ import "testing"
 func TestRuntimeFindings_Classify(t *testing.T) {
 	rc := RuntimeCapture{
 		Repeats: []RepeatStat{
-			{Sig: "coordinator · err: InputValidationError", Count: 14}, // 错误循环 critical
-			{Sig: "coordinator · subagent", Count: 45},                  // 正常高频工具 → 不产 Finding
+			{Sig: "writer-ch07 · err: InputValidationError", Count: 14}, // 错误循环 critical
+			{Sig: "writer-ch07 · novel_context", Count: 45},             // 正常高频工具 → 不产 Finding
 			{Sig: "writer · save_plan (args invalid)", Count: 4},        // 参数无效 warning
 		},
 		StuckStep:  "writing.commit_ch07",

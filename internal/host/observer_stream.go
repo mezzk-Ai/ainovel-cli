@@ -63,32 +63,6 @@ func (o *observer) handleSubagentDelta(p *agentcore.ProgressPayload) {
 	}
 }
 
-func (o *observer) handleCoordinatorToolDelta(ev agentcore.Event) {
-	msg, ok := ev.Message.(agentcore.Message)
-	if !ok {
-		return
-	}
-	call, ok := latestToolCall(msg)
-	if !ok || call.Name == "" {
-		return
-	}
-	if call.Name == "subagent" {
-		o.ensureCoordinatorDispatchStarted(call)
-		o.updateCoordinatorDispatchSummaryFromDelta(ev.Delta)
-		return
-	}
-	o.ensureCoordinatorToolStarted(call.Name)
-	o.updateToolCallSummaryFromDelta("coordinator", call.Name, ev.Delta)
-}
-
-func latestToolCall(msg agentcore.Message) (agentcore.ToolCall, bool) {
-	calls := msg.ToolCalls()
-	if len(calls) == 0 {
-		return agentcore.ToolCall{}, false
-	}
-	return calls[len(calls)-1], true
-}
-
 func (o *observer) emitStreamDelta(delta string, thinking bool) {
 	if delta == "" {
 		return
@@ -144,12 +118,11 @@ func (o *observer) resetStreamArgLabel(agent, tool string) {
 }
 
 // emitFallbackStreamHeader 给未配置 extractor 的工具补一行 ✻ 标题到流面板。
-// 三条路径都要调用以保证一致：
+// 两条路径都要调用以保证一致：
 //  1. ensureSubagentToolStarted —— subagent 流式 tool args（DeltaToolCall）
 //  2. handleToolUpdate ProgressToolStart —— subagent 非流式 tool args
-//  3. handleToolStart —— coordinator 自身工具
 //
-// 缺任何一条，同一个工具就会"writer 调有 ✻、coordinator 调没 ✻"或反过来。
+// 缺任何一条，流式与非流式模型的工具标题就会表现不一致。
 func (o *observer) emitFallbackStreamHeader(tool string) {
 	if _, has := toolDisplays[tool]; has {
 		return // 有 extractor，header 由 extractor 自行输出

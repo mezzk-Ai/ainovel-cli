@@ -45,10 +45,9 @@ type activeCall struct {
 	depth   int
 }
 
-// observer 订阅 coordinator 事件流并投影到 Host 的输出通道。
+// observer 把 Engine 派发与 Worker 进度投影到 Host 的输出通道。
 // 它是纯观察者,不参与任何控制决策。
 type observer struct {
-	unsub   func()
 	emitEv  func(Event)
 	emitD   func(string)
 	emitC   func()
@@ -61,17 +60,16 @@ type observer struct {
 	// "用户手动暂停"事件重复）。真实异常（非 cancel）仍照常上报。
 	aborting atomic.Bool
 
-	streamThinking        bool
-	lastThinkingByAgent   map[string]string          // agent → 最近的累积 thinking 文本（用于提取增量 delta）
-	dispatchStarts        map[string]*activeCall     // dispatched agent → 进行中的 DISPATCH 调用
-	currentDispatchTarget string                     // 当前正在执行的 subagent 名（handleToolEnd 时 Args 可能为空）
-	toolStarts            map[string]*activeCall     // agent → 进行中的 TOOL 调用
-	streamExtractors      map[string]*agentExtractor // agent → 当前工具调用 JSON 参数的内容抽取器
-	streamArgPrefixes     map[string]string          // agent/tool → 参数流前缀，用于提前识别轻量标签
-	streamArgLabels       map[string]string          // agent/tool → 已从参数流提前识别出的展示名
-	retryEvents           map[string]string          // retry scope → event ID，用同一行原地更新 (2/7)
-	streamHasContent      bool                       // 当前 streamRound 是否已输出过内容（判断是否需要段落分隔）
-	streamLastByte        byte                       // 最近一次流式输出的末字节（用于精确补齐换行）
+	streamThinking      bool
+	lastThinkingByAgent map[string]string          // agent → 最近的累积 thinking 文本（用于提取增量 delta）
+	dispatchStarts      map[string]*activeCall     // dispatched agent → 进行中的 DISPATCH 调用
+	toolStarts          map[string]*activeCall     // agent → 进行中的 TOOL 调用
+	streamExtractors    map[string]*agentExtractor // agent → 当前工具调用 JSON 参数的内容抽取器
+	streamArgPrefixes   map[string]string          // agent/tool → 参数流前缀，用于提前识别轻量标签
+	streamArgLabels     map[string]string          // agent/tool → 已从参数流提前识别出的展示名
+	retryEvents         map[string]string          // retry scope → event ID，用同一行原地更新 (2/7)
+	streamHasContent    bool                       // 当前 streamRound 是否已输出过内容（判断是否需要段落分隔）
+	streamLastByte      byte                       // 最近一次流式输出的末字节（用于精确补齐换行）
 }
 
 // agentExtractor 记录某个 agent 当前正在抽取的工具名与抽取器实例。
@@ -92,8 +90,8 @@ type agentState struct {
 	updated time.Time
 }
 
-func newObserver(coordinator *agentcore.Agent, s *storepkg.Store, emitEv func(Event), emitD func(string), emitC func()) *observer {
-	o := &observer{
+func newObserver(s *storepkg.Store, emitEv func(Event), emitD func(string), emitC func()) *observer {
+	return &observer{
 		emitEv:              emitEv,
 		emitD:               emitD,
 		emitC:               emitC,
@@ -107,8 +105,60 @@ func newObserver(coordinator *agentcore.Agent, s *storepkg.Store, emitEv func(Ev
 		streamArgLabels:     make(map[string]string),
 		retryEvents:         make(map[string]string),
 	}
-	o.unsub = coordinator.Subscribe(o.handle)
-	return o
+}
+
+// ── Engine 直驱入口 ──
+//
+// Engine 直接运行 Worker，事件来源分为两条:
+//  1. dispatchStart/dispatchFinish —— Engine 在派发边界直接调用(DISPATCH 行)
+//  2. workerProgress —— Worker 的进度中继(ctx ToolProgress)，
+//     由 handleToolUpdate 统一处理 TOOL/流式正文/thinking/retry/context
+//     (TOOL 行/流式正文/thinking/retry/context)。
+
+// dispatchStart 记录一次 Worker 派发开始并发 DISPATCH 行。
+func (o *observer) dispatchStart(agent, task string) {
+	summary := dispatchSummary(agent, task)
+	o.updateAgent(agent, func(a *agentState) {
+		a.state = "working"
+		a.tool = ""
+		a.summary = fmt.Sprintf("engine → %s", summary)
+	})
+	id := nextEventID()
+	o.dispatchStarts[agent] = &activeCall{id: id, start: time.Now(), summary: summary}
+	o.emitAndLog(Event{
+		ID:       id,
+		Time:     time.Now(),
+		Category: "DISPATCH",
+		Agent:    "engine",
+		Summary:  summary,
+		Level:    "info",
+	})
+}
+
+// dispatchFinish 把 DISPATCH 行落成完成态并复位 Worker 状态;
+// 清理该 Worker 名下的孤儿 TOOL 行(abort/错误路径 ProgressToolEnd 可能缺席)。
+func (o *observer) dispatchFinish(agent string, failed bool) {
+	o.updateAgent(agent, func(a *agentState) {
+		a.state = "idle"
+		a.tool = ""
+	})
+	delete(o.lastThinkingByAgent, agent)
+	if call, ok := o.toolStarts[agent]; ok {
+		delete(o.toolStarts, agent)
+		delete(o.streamExtractors, agent)
+		o.emitCallFinish(call, "TOOL", agent, failed)
+	}
+	if call, ok := o.dispatchStarts[agent]; ok {
+		delete(o.dispatchStarts, agent)
+		o.emitCallFinish(call, "DISPATCH", agent, failed)
+	}
+	o.streamClear()
+}
+
+// workerProgress 把 Worker 进度中继适配为既有的 ToolExecUpdate 处理。
+func (o *observer) workerProgress(p agentcore.ProgressPayload) {
+	payload := p
+	o.handleToolUpdate(agentcore.Event{Type: agentcore.EventToolExecUpdate, Progress: &payload})
 }
 
 func (o *observer) finalize() {
@@ -126,7 +176,7 @@ func (o *observer) setAborting(v bool) { o.aborting.Store(v) }
 
 func (o *observer) retryEventID(scope string, attempt int) string {
 	if strings.TrimSpace(scope) == "" {
-		scope = "coordinator"
+		scope = "engine"
 	}
 	if o.retryEvents == nil {
 		o.retryEvents = make(map[string]string)
@@ -194,11 +244,4 @@ func (o *observer) agentSnapshots() []AgentSnapshot {
 		})
 	}
 	return snaps
-}
-
-func agentFromEvent(ev agentcore.Event) string {
-	if ev.Progress != nil && ev.Progress.Agent != "" {
-		return ev.Progress.Agent
-	}
-	return "coordinator"
 }

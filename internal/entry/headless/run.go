@@ -68,7 +68,7 @@ func Run(cfg bootstrap.Config, bundle assets.Bundle, opts Options) error {
 		if err := eng.PrepareUserRules(plan.RawPrompt); err != nil {
 			return err
 		}
-		if err := eng.StartPrepared(plan.StartPrompt); err != nil {
+		if err := eng.StartPrepared(plan.RawPrompt); err != nil {
 			return err
 		}
 	} else {

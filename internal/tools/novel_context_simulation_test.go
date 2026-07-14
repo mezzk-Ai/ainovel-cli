@@ -35,10 +35,9 @@ func TestContextToolInjectsCompactSimulationProfile(t *testing.T) {
 				NarrativeVoice: []string{"close third"},
 			},
 			RoleGuidance: domain.SimulationRoleGuidance{
-				Coordinator: []string{"keep tasks aligned"},
-				Architect:   []string{"escalate costs"},
-				Writer:      []string{"borrow technique only"},
-				Editor:      []string{"check non-copying"},
+				Architect: []string{"escalate costs"},
+				Writer:    []string{"borrow technique only"},
+				Editor:    []string{"check non-copying"},
 			},
 		},
 	}

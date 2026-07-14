@@ -33,7 +33,10 @@ const (
 )
 
 // SnapshotVersion 是当前快照 schema 版本，便于未来迁移。
-const SnapshotVersion = 1
+// v2：chapter_words 退出 structured（字数是语义软约束，走 preferences）。
+// v1 快照直接加载兼容：未知字段被反序列化忽略，下次叠加保存时自然收敛为 v2；
+// 刻意不做"版本不符即重建"——那会丢掉 AddRuntimeRule 运行中追加的不可再生规则。
+const SnapshotVersion = 2
 
 // Candidate 是单个来源归一化后的候选结果。
 //
@@ -75,9 +78,6 @@ func BuildSnapshot(cands []Candidate) Snapshot {
 		if s.Genre != "" {
 			snap.Structured.Genre = s.Genre
 		}
-		if s.ChapterWords != nil {
-			snap.Structured.ChapterWords = s.ChapterWords
-		}
 		if len(s.ForbiddenChars) > 0 {
 			snap.Structured.ForbiddenChars = s.ForbiddenChars
 		}
@@ -109,7 +109,7 @@ func BuildSnapshot(cands []Candidate) Snapshot {
 
 // OverlaySnapshot 把一个高优先级候选叠加到已有快照上（候选胜出）。
 //
-// 用于运行中 save_user_rules：不重新归一化所有来源，只把新规则覆盖进当前快照——
+// 用于运行中 Arbiter rules 动作：不重新归一化所有来源，只把新规则覆盖进当前快照——
 // structured 按字段覆盖、preferences 追加一段、sources/uncertain 累加、降级传播。
 func OverlaySnapshot(base Snapshot, cand Candidate) Snapshot {
 	out := base
@@ -117,9 +117,6 @@ func OverlaySnapshot(base Snapshot, cand Candidate) Snapshot {
 	s := sanitizeStructured(cand.Structured)
 	if s.Genre != "" {
 		out.Structured.Genre = s.Genre
-	}
-	if s.ChapterWords != nil {
-		out.Structured.ChapterWords = s.ChapterWords
 	}
 	if len(s.ForbiddenChars) > 0 {
 		out.Structured.ForbiddenChars = s.ForbiddenChars
@@ -184,7 +181,6 @@ func SystemDefaults() Candidate {
 	return Candidate{
 		Source: "system_defaults",
 		Structured: Structured{
-			ChapterWords: &WordRange{Min: 3000, Max: 6000},
 			// 定长固定串的 AI 套句；checker 字面子串匹配，带变量的模式（不是X而是Y）归语义层。
 			ForbiddenPhrases: []string{"某种程度上", "值得注意的是", "不知为何", "五味杂陈"},
 			FatigueWords: map[string]int{
@@ -196,40 +192,17 @@ func SystemDefaults() Candidate {
 	}
 }
 
-// sanitizeStructured 落实"空值/零值=字段缺失"：归一化器可能吐 genre:""、chapter_words.min:0
-// 这类占位（原型实测），必须当作未声明，避免污染合并与机械检查。
+// sanitizeStructured 落实"空值/零值=字段缺失"：归一化器可能吐 genre:"" 这类占位
+// （原型实测），必须当作未声明，避免污染合并与机械检查。
 func sanitizeStructured(s Structured) Structured {
 	out := Structured{}
 	if g := strings.TrimSpace(s.Genre); g != "" {
 		out.Genre = g
 	}
-	out.ChapterWords = sanitizeWordRange(s.ChapterWords)
 	out.ForbiddenChars = nonEmptyStrings(s.ForbiddenChars)
 	out.ForbiddenPhrases = nonEmptyStrings(s.ForbiddenPhrases)
 	out.FatigueWords = sanitizeFatigueWords(s.FatigueWords)
 	return out
-}
-
-// sanitizeWordRange 处理零值与非法区间：min/max 同为 0 表示无约束（丢弃）；
-// 单边为 0 合法（checker 把 0 当"该侧无界"）；min>max>0 非法，丢弃整段。
-func sanitizeWordRange(r *WordRange) *WordRange {
-	if r == nil {
-		return nil
-	}
-	min, max := r.Min, r.Max
-	if min < 0 {
-		min = 0
-	}
-	if max < 0 {
-		max = 0
-	}
-	if min == 0 && max == 0 {
-		return nil
-	}
-	if max > 0 && min > max {
-		return nil
-	}
-	return &WordRange{Min: min, Max: max}
 }
 
 func nonEmptyStrings(in []string) []string {

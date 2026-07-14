@@ -217,15 +217,6 @@ func TestRoute_ArcEndNonLayeredSkipsBoundary(t *testing.T) {
 	}
 }
 
-func TestFormatMessage(t *testing.T) {
-	msg := FormatMessage(&Instruction{Agent: "writer", Task: "写第 5 章", Reason: "续写"})
-	for _, want := range []string{"[Host 下达指令]", "subagent(writer, \"写第 5 章\")", "agent: writer", "task: \"写第 5 章\"", "续写", "必须原样使用", "不要改写 task", "不要先调 novel_context"} {
-		if !contains(msg, want) {
-			t.Errorf("message missing %q: %s", want, msg)
-		}
-	}
-}
-
 func contains(s, sub string) bool {
 	for i := 0; i+len(sub) <= len(s); i++ {
 		if s[i:i+len(sub)] == sub {
@@ -233,4 +224,44 @@ func contains(s, sub string) bool {
 		}
 	}
 	return false
+}
+
+// 规划期补齐:设定缺项 + 规划师可判定 → 照缺项续派同一规划师。
+func TestRoute_PlanningFillDispatchesSamePlanner(t *testing.T) {
+	base := State{
+		Progress:          &domain.Progress{Phase: domain.PhaseOutline},
+		FoundationMissing: []string{"characters", "world_rules"},
+	}
+
+	short := base
+	short.PlanningTier = domain.PlanningTierShort
+	if got := Route(short); got == nil || got.Agent != "architect_short" {
+		t.Fatalf("short tier 应续派 architect_short,got %+v", got)
+	}
+
+	long := base
+	long.PlanningTier = domain.PlanningTierLong
+	got := Route(long)
+	if got == nil || got.Agent != "architect_long" {
+		t.Fatalf("long tier 应续派 architect_long,got %+v", got)
+	}
+	for _, want := range []string{"补齐基础设定", "characters", "world_rules", "save_foundation"} {
+		if !contains(got.Task, want) {
+			t.Errorf("补齐任务缺少 %q: %s", want, got.Task)
+		}
+	}
+
+	// 首次规划未落盘任何设定(tier 空)→ 选型是语义判断,交 LLM
+	unknown := base
+	if got := Route(unknown); got != nil {
+		t.Fatalf("tier 未知时应交 LLM 裁定,got %+v", got)
+	}
+
+	// 缺项已齐 → 无补齐指令(等 phase 推进)
+	done := base
+	done.PlanningTier = domain.PlanningTierLong
+	done.FoundationMissing = nil
+	if got := Route(done); got != nil {
+		t.Fatalf("缺项已齐时不应派补齐,got %+v", got)
+	}
 }

@@ -1,6 +1,7 @@
 package flow
 
 import (
+	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -10,6 +11,11 @@ import (
 func LoadState(store *storepkg.Store) State {
 	s := State{
 		FoundationMissing: store.FoundationMissing(),
+	}
+	// 规划级别:save_foundation 落 scale 时写入 RunMeta,补齐分支据此推导规划师。
+	// 读失败按未知处理(tier 空 → 补齐交 LLM 裁定),与其余事实的保守默认一致。
+	if meta, err := store.RunMeta.Load(); err == nil && meta != nil {
+		s.PlanningTier = meta.PlanningTier
 	}
 	progress, err := store.Progress.Load()
 	if err != nil || progress == nil {
@@ -32,6 +38,13 @@ func LoadState(store *storepkg.Store) State {
 					s.HasVolumeSummary = store.Summaries.HasVolumeSummary(boundary.Volume)
 				}
 			}
+		}
+	}
+
+	// 非分层全局审阅事实:仅在触发点读盘(其余组合 Route 不消费该字段)。
+	if !progress.Layered && s.LastCompleted > 0 {
+		if due, _ := domain.ShouldReview(len(progress.CompletedChapters)); due {
+			s.HasGlobalReview = store.World.HasGlobalReview(s.LastCompleted)
 		}
 	}
 

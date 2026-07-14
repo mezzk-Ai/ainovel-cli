@@ -672,7 +672,8 @@ func TestCommitChapterFinaleVolumeCompletesDespiteOpenThreads(t *testing.T) {
 
 	// 卷末宣告收官卷：append_volume 带 final:true
 	appendArgs, _ := json.Marshal(map[string]any{
-		"type": "append_volume",
+		"type":   "append_volume",
+		"reason": "长线可在一卷内收完，宣告收官卷",
 		"content": map[string]any{
 			"index": 2, "title": "终卷", "theme": "收束", "final": true,
 			"arcs": []map[string]any{{

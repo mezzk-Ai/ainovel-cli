@@ -115,7 +115,7 @@ func startRuntime(rt *host.Host, plan startup.Plan) tea.Cmd {
 		if err := rt.PrepareUserRules(plan.RawPrompt); err != nil {
 			return startResultMsg{err: err}
 		}
-		err := rt.StartPrepared(plan.StartPrompt)
+		err := rt.StartPrepared(plan.RawPrompt)
 		return startResultMsg{err: err}
 	}
 }

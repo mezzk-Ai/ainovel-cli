@@ -17,7 +17,7 @@ import (
 // store.compactMessage 更严的一层投影——后者按体积压（>4KB），这里不看体积，
 // 任何文本都不出包。
 type SkelEvent struct {
-	Agent    string     // 来源会话：coordinator / writer-ch07 …
+	Agent    string     // 来源会话：writer-ch07 / architect-arc02 …
 	Role     string     // assistant / tool / user
 	Tools    []SkelTool // 该消息内的工具调用
 	ErrClass string     // role=tool 且 is_error：错误首行（框架错误串，不含正文）

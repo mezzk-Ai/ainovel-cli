@@ -38,7 +38,10 @@
       // ollama / bedrock / 显式 type 的自定义代理可以省略 api_key
       // base_url 需带 /v1（ollama 的 OpenAI 兼容端点在 /v1 下）
       "base_url": "http://localhost:11434/v1",
-      "models": ["qwen3:14b"]
+      "models": ["qwen3:14b"],
+      // 可选。流式空闲看门狗（Go duration，默认 "5m"）：LocalAI/ollama 等
+      // 本地慢推理首块可超 5 分钟，按 provider 放宽，不影响其它通道
+      "stream_idle_timeout": "15m"
     },
     "claude-code-proxy": {
       // 自定义 Anthropic 代理。如果上游限制只能由 Claude Code 客户端访问，
@@ -87,7 +90,7 @@
 
   // 可选。按角色覆盖默认模型；未配的角色使用上面的 model。
   // reasoning_effort 也可按角色覆盖；未配时继承顶层 reasoning_effort。
-  // 角色：coordinator / architect / writer / editor。fallbacks 在主模型失败时按序尝试。
+  // 角色：architect / writer / editor。fallbacks 在主模型失败时按序尝试。
   // 注意：这里的 provider 同样是“指针”，必须指向 providers 里存在的 key。
   // "roles": {
   //   "writer": {
@@ -118,15 +121,17 @@
   //   "hard_stop": false
   // },
 
-  // 可选。无人值守告警，缺省启用（macOS osascript / Linux notify-send 桌面通知）。
+  // 可选。无人值守告警，缺省启用（Windows 通知 / macOS osascript / Linux notify-send）。
   // 配置 command 后改走自定义命令（手机推送走这里）：字段经环境变量
-  // $NOTIFY_TITLE / $NOTIFY_BODY / $NOTIFY_KIND / $NOTIFY_LEVEL 传入，完整 JSON 同时写 stdin。
-  // events 可选过滤：run_end（完成/停止）/ repeat（指令重复，疑似空转）/ budget（预算）/ pause_point（重写完成暂停等验收）。
+  // NOTIFY_TITLE / NOTIFY_BODY / NOTIFY_KIND / NOTIFY_LEVEL 通过环境变量传入，完整 JSON 同时写 stdin。
+  // Unix shell 用 $NOTIFY_TITLE；Windows PowerShell 用 $env:NOTIFY_TITLE。
+  // events 可选过滤：run_end / budget / advance_gate / stop_guard /
+  // plan_start / deadlock / worker_failure；缺省全部开启。
   // "notify": {
   //   "enabled": true,
   //   // 标题/正文含中文与空格，必须经 --data-urlencode 传参，不可拼进 URL 路径或 HTTP 头。
   //   // Bark (iOS):         "command": "curl -s --data-urlencode \"title=$NOTIFY_TITLE\" --data-urlencode \"body=$NOTIFY_BODY\" https://api.day.app/<key>"
   //   // ntfy (iOS/Android): "command": "curl -s -G --data-urlencode \"title=$NOTIFY_TITLE\" --data-urlencode \"message=$NOTIFY_BODY\" ntfy.sh/<topic>/publish"
-  //   "events": ["run_end", "repeat", "budget", "pause_point"]
+  //   "events": ["run_end", "budget", "advance_gate", "stop_guard", "plan_start", "deadlock", "worker_failure"]
   // }
 }

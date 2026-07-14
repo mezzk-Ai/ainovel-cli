@@ -29,7 +29,7 @@ const defaultDeltaRatio = 0.3
 type Case struct {
 	ID            string   `json:"id"`
 	Category      string   `json:"category"`       // 评测层：smoke/workflow/quality/longform/recovery/steering
-	Role          string   `json:"role,omitempty"` // 被测角色：writer/architect/editor/coordinator（与 Category 正交）
+	Role          string   `json:"role,omitempty"` // 被测角色：writer/architect/editor（与 Category 正交）
 	Description   string   `json:"description,omitempty"`
 	Prompt        string   `json:"prompt"`                   // 用户创作需求
 	Style         string   `json:"style,omitempty"`          // 覆盖配置风格

@@ -1,6 +1,9 @@
 package domain
 
-import "strings"
+import (
+	"fmt"
+	"strings"
+)
 
 // Phase 表示小说创作阶段。
 type Phase string
@@ -203,29 +206,67 @@ func NewArchitectMemoryPolicy() MemoryPolicy {
 
 // RunMeta 运行元信息，持久化到 meta/run.json。
 type RunMeta struct {
-	StartedAt    string       `json:"started_at"`
-	Provider     string       `json:"provider,omitempty"`
-	Style        string       `json:"style"`
-	Model        string       `json:"model"`
-	PlanningTier PlanningTier `json:"planning_tier,omitempty"`
-	SteerHistory []SteerEntry `json:"steer_history,omitempty"`
-	PendingSteer string       `json:"pending_steer,omitempty"` // 未完成的 Steer 指令，中断恢复时重新注入
-	PausePoint   *PausePoint  `json:"pause_point,omitempty"`   // 用户预约的验收停靠点，Host 边界消费
+	StartedAt            string             `json:"started_at"`
+	Provider             string             `json:"provider,omitempty"`
+	Style                string             `json:"style"`
+	Model                string             `json:"model"`
+	PlanningTier         PlanningTier       `json:"planning_tier,omitempty"`
+	StartPrompt          string             `json:"start_prompt,omitempty"`           // 用户原始创作需求（输入事实，先于启动裁定落盘；裁定失败后据此补裁）
+	PlanStart            *PlanStartRecord   `json:"plan_start,omitempty"`             // 启动裁定事实，规划期崩溃恢复的唯一依据
+	PendingSteer         string             `json:"pending_steer,omitempty"`          // 未完成的 Steer 指令，中断恢复时重新注入
+	AdvanceMode          ChapterAdvanceMode `json:"advance_mode"`                     // 章节推进模式：auto / review
+	AdvancePermitChapter int                `json:"advance_permit_chapter,omitempty"` // review 模式下一次性许可的正向章节
+	AdvanceHold          *AdvanceHold       `json:"advance_hold,omitempty"`           // 当前干预签署的一次性暂停意图
 }
 
-// SteerEntry 用户干预记录。
-type SteerEntry struct {
-	Input     string `json:"input"`
-	Timestamp string `json:"timestamp"`
+// ChapterAdvanceMode 决定新章节是否需要逐章许可。
+type ChapterAdvanceMode string
+
+const (
+	ChapterAdvanceAuto   ChapterAdvanceMode = "auto"
+	ChapterAdvanceReview ChapterAdvanceMode = "review"
+)
+
+// Valid 报告章节推进模式是否受当前版本支持。
+func (m ChapterAdvanceMode) Valid() bool {
+	return m == ChapterAdvanceAuto || m == ChapterAdvanceReview
 }
 
-// PauseAfterRewritesDrained 停靠点条件：重写队列排空后暂停。
-const PauseAfterRewritesDrained = "rewrites_drained"
+// UnsupportedAdvanceModeError 表示书的控制模式不受当前二进制支持。
+// 调用方必须停止构造可写 Host，并提示用户使用匹配版本；禁止猜测降级。
+type UnsupportedAdvanceModeError struct {
+	Mode ChapterAdvanceMode
+}
 
-// PausePoint 用户停靠点：用户级运行意图（非创作事实），由 Coordinator 裁定
-// 干预意图后经工具落盘，Host 在流程边界查表消费，一次性。
-type PausePoint struct {
-	After  string `json:"after"`            // 触发条件，见 PauseAfter* 常量
-	Reason string `json:"reason,omitempty"` // 用户诉求摘要，用于暂停事件文案
-	SetAt  string `json:"set_at,omitempty"`
+func (e *UnsupportedAdvanceModeError) Error() string {
+	return fmt.Sprintf("不支持的章节推进模式 %q，请使用创建该项目的新版 ainovel", e.Mode)
+}
+
+// AdvanceHoldAfter 是一次性暂停的确定性触发条件。
+type AdvanceHoldAfter string
+
+const (
+	AdvanceHoldAtBoundary           AdvanceHoldAfter = "boundary"
+	AdvanceHoldAfterRewritesDrained AdvanceHoldAfter = "rewrites_drained"
+)
+
+// Valid 报告暂停条件是否受当前版本支持。
+func (a AdvanceHoldAfter) Valid() bool {
+	return a == AdvanceHoldAtBoundary || a == AdvanceHoldAfterRewritesDrained
+}
+
+// AdvanceHold 是当前干预签署的一次性暂停意图，由 Host 边界消费。
+type AdvanceHold struct {
+	After  AdvanceHoldAfter `json:"after"`
+	Reason string           `json:"reason"`
+}
+
+// PlanStartRecord 启动裁定的持久化事实(裁定先落事实,再起执行;恢复不重新裁定)。
+// 首个 save_foundation 落盘 scale 后,规划期恢复改由 PlanningTier 推导,本记录
+// 只覆盖"裁定完成到首次落盘之间"的窗口。DecisionID 关联 decisions.jsonl 审计。
+type PlanStartRecord struct {
+	RawPrompt   string `json:"raw_prompt"`
+	Planner     string `json:"planner"`
+	PlannerTask string `json:"planner_task"`
+	DecisionID  string `json:"decision_id,omitempty"`
 }

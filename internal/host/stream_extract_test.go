@@ -182,7 +182,7 @@ func TestExtract_CheckConsistency(t *testing.T) {
 	mustContain(t, out, "chapter: 234")
 }
 
-// 空 args 兜底：coordinator 调 novel_context 不传参时 args 是 {}，
+// 空 args 兜底：architect 调 novel_context 不传参时 args 是 {}，
 // 不能完全静默，至少要输出 header 让用户感知调用。
 func TestExtract_NovelContextEmptyArgs(t *testing.T) {
 	out := feedAll(t, "novel_context", `{}`)

@@ -1,8 +1,7 @@
 package store
 
 import (
-	"fmt"
-	"sync"
+	"errors"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -50,125 +49,20 @@ func TestLoadRunMeta_Empty(t *testing.T) {
 	}
 }
 
-func TestAppendSteerEntry(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-
-	// 首次追加（meta/run.json 不存在）
-	e1 := domain.SteerEntry{Input: "主角改成女性", Timestamp: "2026-03-07T10:01:00+08:00"}
-	if err := store.RunMeta.AppendSteerEntry(e1); err != nil {
-		t.Fatalf("AppendSteerEntry 1: %v", err)
-	}
-
-	meta, _ := store.RunMeta.Load()
-	if len(meta.SteerHistory) != 1 {
-		t.Fatalf("expected 1 entry, got %d", len(meta.SteerHistory))
-	}
-	if meta.SteerHistory[0].Input != "主角改成女性" {
-		t.Errorf("input mismatch: %s", meta.SteerHistory[0].Input)
-	}
-
-	// 追加第二条
-	e2 := domain.SteerEntry{Input: "加入反转", Timestamp: "2026-03-07T10:02:00+08:00"}
-	_ = store.RunMeta.AppendSteerEntry(e2)
-
-	meta, _ = store.RunMeta.Load()
-	if len(meta.SteerHistory) != 2 {
-		t.Fatalf("expected 2 entries, got %d", len(meta.SteerHistory))
-	}
-}
-
-func TestAppendSteerEntryConcurrent(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-
-	const workers = 32
-	var wg sync.WaitGroup
-	start := make(chan struct{})
-
-	for i := 0; i < workers; i++ {
-		wg.Add(1)
-		go func(i int) {
-			defer wg.Done()
-			<-start
-			entry := domain.SteerEntry{
-				Input:     fmt.Sprintf("steer-%02d", i),
-				Timestamp: fmt.Sprintf("ts-%02d", i),
-			}
-			if err := store.RunMeta.AppendSteerEntry(entry); err != nil {
-				t.Errorf("AppendSteerEntry(%d): %v", i, err)
-			}
-		}(i)
-	}
-
-	close(start)
-	wg.Wait()
-
-	meta, err := store.RunMeta.Load()
-	if err != nil {
-		t.Fatalf("LoadRunMeta: %v", err)
-	}
-	if meta == nil {
-		t.Fatal("expected run meta to exist")
-	}
-	if len(meta.SteerHistory) != workers {
-		t.Fatalf("expected %d steer entries, got %d", workers, len(meta.SteerHistory))
-	}
-
-	seen := make(map[string]struct{}, workers)
-	for _, entry := range meta.SteerHistory {
-		seen[entry.Input] = struct{}{}
-	}
-	if len(seen) != workers {
-		t.Fatalf("expected %d unique steer entries, got %d", workers, len(seen))
-	}
-}
-
-func TestAppendSteerEntry_PreservesExistingMeta(t *testing.T) {
-	dir := t.TempDir()
-	store := NewStore(dir)
-
-	// 先保存 RunMeta
-	_ = store.RunMeta.Save(domain.RunMeta{
-		StartedAt: "2026-03-07T10:00:00+08:00",
-		Provider:  "openrouter",
-		Style:     "suspense",
-		Model:     "gpt-4o",
-	})
-
-	// 追加 Steer 不应覆盖其他字段
-	_ = store.RunMeta.AppendSteerEntry(domain.SteerEntry{Input: "test", Timestamp: "now"})
-
-	meta, _ := store.RunMeta.Load()
-	if meta.Style != "suspense" {
-		t.Errorf("style should be preserved, got %s", meta.Style)
-	}
-	if meta.Provider != "openrouter" {
-		t.Errorf("provider should be preserved, got %s", meta.Provider)
-	}
-	if meta.Model != "gpt-4o" {
-		t.Errorf("model should be preserved, got %s", meta.Model)
-	}
-	if len(meta.SteerHistory) != 1 {
-		t.Errorf("expected 1 steer entry, got %d", len(meta.SteerHistory))
-	}
-}
-
 func TestInitRunMeta_PreservesHistory(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 
-	// 先建立带历史的 RunMeta
+	// 先建立带运行意图的 RunMeta
 	_ = store.RunMeta.Save(domain.RunMeta{
 		StartedAt:    "old",
 		Provider:     "openai",
 		Style:        "fantasy",
 		Model:        "old-model",
-		SteerHistory: []domain.SteerEntry{{Input: "历史干预", Timestamp: "ts"}},
 		PendingSteer: "待处理",
 	})
 
-	// InitRunMeta 应保留 SteerHistory 和 PendingSteer
+	// Init 应保留 PendingSteer 等运行意图事实
 	_ = store.RunMeta.Init("suspense", "openrouter", "new-model")
 
 	meta, _ := store.RunMeta.Load()
@@ -181,11 +75,11 @@ func TestInitRunMeta_PreservesHistory(t *testing.T) {
 	if meta.Model != "new-model" {
 		t.Errorf("model should be updated, got %s", meta.Model)
 	}
-	if len(meta.SteerHistory) != 1 || meta.SteerHistory[0].Input != "历史干预" {
-		t.Errorf("steer history should be preserved, got %v", meta.SteerHistory)
-	}
 	if meta.PendingSteer != "待处理" {
 		t.Errorf("pending steer should be preserved, got %s", meta.PendingSteer)
+	}
+	if meta.AdvanceMode != domain.ChapterAdvanceAuto {
+		t.Errorf("missing advance mode should initialize to auto, got %q", meta.AdvanceMode)
 	}
 }
 
@@ -242,43 +136,147 @@ func TestClearPendingSteer_Noop(t *testing.T) {
 	}
 }
 
-func TestSetAndClearPausePoint(t *testing.T) {
+func TestAdvanceControlRoundTrip(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
-
-	pp := domain.PausePoint{After: domain.PauseAfterRewritesDrained, Reason: "重写第3章", SetAt: "ts"}
-	if err := store.RunMeta.SetPausePoint(pp); err != nil {
-		t.Fatalf("SetPausePoint: %v", err)
+	if err := store.RunMeta.Init("fantasy", "openrouter", "m"); err != nil {
+		t.Fatalf("Init: %v", err)
 	}
+	if err := store.RunMeta.SetAdvanceMode(domain.ChapterAdvanceReview); err != nil {
+		t.Fatalf("SetAdvanceMode: %v", err)
+	}
+	if err := store.RunMeta.GrantAdvancePermit(3); err != nil {
+		t.Fatalf("GrantAdvancePermit: %v", err)
+	}
+	hold := domain.AdvanceHold{After: domain.AdvanceHoldAfterRewritesDrained, Reason: "重写第3章"}
+	if err := store.RunMeta.SetAdvanceHold(hold); err != nil {
+		t.Fatalf("SetAdvanceHold: %v", err)
+	}
+
 	meta, _ := store.RunMeta.Load()
-	if meta.PausePoint == nil || meta.PausePoint.After != domain.PauseAfterRewritesDrained || meta.PausePoint.Reason != "重写第3章" {
-		t.Errorf("pause point round trip: %+v", meta.PausePoint)
+	if meta.AdvanceMode != domain.ChapterAdvanceReview || meta.AdvancePermitChapter != 3 {
+		t.Fatalf("advance mode/permit round trip: %+v", meta)
+	}
+	if meta.AdvanceHold == nil || *meta.AdvanceHold != hold {
+		t.Fatalf("advance hold round trip: %+v", meta.AdvanceHold)
 	}
 
-	if err := store.RunMeta.ClearPausePoint(); err != nil {
-		t.Fatalf("ClearPausePoint: %v", err)
+	if err := store.RunMeta.ClearAdvancePermit(3); err != nil {
+		t.Fatalf("ClearAdvancePermit: %v", err)
+	}
+	if err := store.RunMeta.ClearAdvanceHold(hold); err != nil {
+		t.Fatalf("ClearAdvanceHold: %v", err)
 	}
 	meta, _ = store.RunMeta.Load()
-	if meta.PausePoint != nil {
-		t.Errorf("expected nil pause point, got %+v", meta.PausePoint)
-	}
-
-	// 空/无点时清除幂等
-	if err := store.RunMeta.ClearPausePoint(); err != nil {
-		t.Fatalf("ClearPausePoint idempotent: %v", err)
+	if meta.AdvancePermitChapter != 0 || meta.AdvanceHold != nil {
+		t.Fatalf("advance intent should be consumed: %+v", meta)
 	}
 }
 
-func TestInitRunMeta_PreservesPausePoint(t *testing.T) {
+func TestInitRunMeta_PreservesAdvanceIntent(t *testing.T) {
 	dir := t.TempDir()
 	store := NewStore(dir)
 
-	_ = store.RunMeta.SetPausePoint(domain.PausePoint{After: domain.PauseAfterRewritesDrained, Reason: "验收"})
-	// 进程重启路径：Host.New 每次都会调 Init，停靠点必须存活
+	if err := store.RunMeta.Init("fantasy", "openrouter", "m"); err != nil {
+		t.Fatal(err)
+	}
+	_ = store.RunMeta.SetAdvanceMode(domain.ChapterAdvanceReview)
+	_ = store.RunMeta.GrantAdvancePermit(7)
+	hold := domain.AdvanceHold{After: domain.AdvanceHoldAtBoundary, Reason: "验收"}
+	_ = store.RunMeta.SetAdvanceHold(hold)
+	// 进程重启路径：Host.New 每次都会调 Init，用户运行意图必须存活。
 	_ = store.RunMeta.Init("fantasy", "openrouter", "m")
 
 	meta, _ := store.RunMeta.Load()
-	if meta.PausePoint == nil || meta.PausePoint.Reason != "验收" {
-		t.Fatalf("pause point should survive Init, got %+v", meta.PausePoint)
+	if meta.AdvanceMode != domain.ChapterAdvanceReview || meta.AdvancePermitChapter != 7 {
+		t.Fatalf("advance mode/permit should survive Init, got %+v", meta)
+	}
+	if meta.AdvanceHold == nil || *meta.AdvanceHold != hold {
+		t.Fatalf("advance hold should survive Init, got %+v", meta.AdvanceHold)
+	}
+}
+
+func TestAdvanceControlRejectsConflictingIntent(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.RunMeta.Init("fantasy", "openrouter", "m"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.GrantAdvancePermit(1); err == nil {
+		t.Fatal("auto mode must reject permit")
+	}
+	if err := store.RunMeta.SetAdvanceMode(domain.ChapterAdvanceReview); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.GrantAdvancePermit(2); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.GrantAdvancePermit(3); err == nil {
+		t.Fatal("conflicting permit must fail")
+	}
+	hold := domain.AdvanceHold{After: domain.AdvanceHoldAtBoundary, Reason: "停"}
+	if err := store.RunMeta.SetAdvanceHold(hold); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.RunMeta.SetAdvanceHold(domain.AdvanceHold{After: domain.AdvanceHoldAtBoundary, Reason: "另一条"}); err == nil {
+		t.Fatal("conflicting hold must fail")
+	}
+	if err := store.RunMeta.ClearAdvanceHold(domain.AdvanceHold{After: domain.AdvanceHoldAtBoundary, Reason: "旧值"}); err == nil {
+		t.Fatal("compare-and-clear must reject changed hold")
+	}
+	if err := store.RunMeta.SetAdvanceMode(domain.ChapterAdvanceAuto); err != nil {
+		t.Fatal(err)
+	}
+	meta, _ := store.RunMeta.Load()
+	if meta.AdvancePermitChapter != 0 || meta.AdvanceHold == nil {
+		t.Fatalf("auto should clear permit but preserve hold: %+v", meta)
+	}
+}
+
+func TestInitRunMeta_UnknownAdvanceModeDoesNotWrite(t *testing.T) {
+	store := NewStore(t.TempDir())
+	original := domain.RunMeta{Style: "old", AdvanceMode: "future"}
+	if err := store.RunMeta.Save(original); err != nil {
+		t.Fatal(err)
+	}
+	err := store.RunMeta.Init("new", "openrouter", "m")
+	var unsupported *domain.UnsupportedAdvanceModeError
+	if !errors.As(err, &unsupported) {
+		t.Fatalf("expected UnsupportedAdvanceModeError, got %v", err)
+	}
+	meta, loadErr := store.RunMeta.Load()
+	if loadErr != nil {
+		t.Fatal(loadErr)
+	}
+	if meta.Style != "old" || meta.AdvanceMode != "future" {
+		t.Fatalf("failed Init must not rewrite RunMeta: %+v", meta)
+	}
+}
+
+// TestRunMetaInit_PreservesPlanStart 规划期(裁定已落盘、首个 foundation 未落盘)
+// 崩溃重启时,Host.New 的 RunMeta.Init 不得清掉 PlanStart——它是恢复规划师身份的
+// 唯一依据(engine.planStartFallback)。
+func TestRunMetaInit_PreservesPlanStart(t *testing.T) {
+	store := NewStore(t.TempDir())
+	if err := store.RunMeta.SetStartPrompt("写个悬疑短篇"); err != nil {
+		t.Fatalf("set start prompt: %v", err)
+	}
+	rec := domain.PlanStartRecord{RawPrompt: "写个悬疑短篇", Planner: "architect_short", PlannerTask: "任务全文", DecisionID: "dec-x"}
+	if err := store.RunMeta.SetPlanStart(rec); err != nil {
+		t.Fatalf("set plan start: %v", err)
+	}
+	// 模拟进程重启:Host.New 会再次 Init
+	if err := store.RunMeta.Init("default", "openrouter", "m"); err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	meta, err := store.RunMeta.Load()
+	if err != nil || meta == nil {
+		t.Fatalf("load: %v", err)
+	}
+	if meta.PlanStart == nil || meta.PlanStart.Planner != "architect_short" {
+		t.Fatalf("Init 必须保留 PlanStart, got %+v", meta.PlanStart)
+	}
+	// StartPrompt 同样是跨重启事实:裁定失败后它是引擎补裁的唯一依据。
+	if meta.StartPrompt != "写个悬疑短篇" {
+		t.Fatalf("Init 必须保留 StartPrompt, got %q", meta.StartPrompt)
 	}
 }

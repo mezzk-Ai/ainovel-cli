@@ -61,7 +61,7 @@ func (t *ContextTool) ConcurrencySafe(_ json.RawMessage) bool { return true }
 
 func (t *ContextTool) Schema() map[string]any {
 	return schema.Object(
-		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Coordinator 用于判断下一步）；传入则额外返回该章的写作上下文（Writer 用）")),
+		schema.Property("chapter", schema.Int("章节号。不传则返回进度状态和基础设定（Architect 用）；传入则额外返回该章的写作上下文（Writer/Editor 用）")),
 	)
 }
 
@@ -95,13 +95,18 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 		state := t.prepareChapterContext(a.Chapter, &seed, warn)
 		seed.apply(result)
 		t.buildChapterContext(result, state, warn)
+		// 该章的机械违规事实(commit 时按 user_rules 检查并落盘):
+		// editor 评审据此映射进七维(editor.md §机械检查映射);writer 返工时自查。
+		if violations := t.store.World.LoadRuleViolations(a.Chapter); len(violations) > 0 {
+			result["rule_violations"] = violations
+		}
 		// 数据语义标注（治复读交代）：episodic 是已写入正文的备忘，不是待写素材。
 		// 只挂容器内，不进顶层镜像。
 		if epi, ok := result["episodic_memory"].(map[string]any); ok && len(epi) > 0 {
 			epi["_usage"] = "本容器为已写入正文的事实备忘（供一致性与衔接对照）；在新章正文中原样复述这些内容属于重复缺陷"
 		}
 	} else {
-		// Coordinator/Architect 路径：只返回状态 + 结构化数据，不加载全量原文
+		// Architect 路径：只返回状态 + 结构化数据，不加载全量原文
 		t.buildProgressStatus(result)
 		t.buildArchitectContext(result, warn)
 	}
@@ -125,7 +130,7 @@ func (t *ContextTool) Execute(_ context.Context, args json.RawMessage) (json.Raw
 	if a.Chapter > 0 {
 		trimByBudget(result, 100*1024) // Writer: 100KB
 	} else {
-		trimByBudget(result, 60*1024) // Coordinator/Architect: 60KB
+		trimByBudget(result, 60*1024) // Architect: 60KB
 	}
 
 	result["_loading_summary"] = buildLoadingSummary(result, a.Chapter)

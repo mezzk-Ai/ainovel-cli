@@ -5,10 +5,12 @@ import (
 	"log/slog"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 	"github.com/voocel/ainovel-cli/internal/models"
+	"github.com/voocel/ainovel-cli/internal/notify"
 	"github.com/voocel/ainovel-cli/internal/utils"
 )
 
@@ -59,6 +61,33 @@ type ProviderConfig struct {
 	// Extra 透传给 provider 级配置（litellm.ProviderConfig.Extra），用于 HTTP
 	// headers、user_agent、anthropic_beta 等客户端/传输层选项。
 	Extra map[string]any `json:"extra,omitempty"`
+	// StreamIdleTimeout 流式空闲看门狗：超过该时长收不到任何 chunk 即断流
+	// （Go duration 字符串，如 "900s" / "15m"）。留空默认 5m——云端服务的合理上界；
+	// LocalAI/ollama 等自建慢推理首块可远超 5 分钟，按 provider 放宽即可，
+	// 不拖累其它通道的挂死检测（#79）。
+	StreamIdleTimeout string `json:"stream_idle_timeout,omitempty"`
+}
+
+// defaultStreamIdleTimeout：长输出 + 长 ctx 场景下，reasoning-aware provider
+// （mimo / deepseek-r1 等）思考阶段如果 server 端不流式发 reasoning delta，
+// SSE 整段会保持沉默。litellm 默认 watchdog 是 2 分钟，对 8000 字写作章节经常
+// 触发误杀；5 分钟覆盖绝大多数实测案例（参见 tasks/todo.md plan→draft 思考时长统计）。
+const defaultStreamIdleTimeout = 5 * time.Minute
+
+// StreamIdleTimeoutValue 解析该 provider 的流式空闲超时；留空回落默认值。
+func (pc ProviderConfig) StreamIdleTimeoutValue() (time.Duration, error) {
+	s := strings.TrimSpace(pc.StreamIdleTimeout)
+	if s == "" {
+		return defaultStreamIdleTimeout, nil
+	}
+	d, err := time.ParseDuration(s)
+	if err != nil {
+		return 0, fmt.Errorf("invalid duration %q (use Go duration like \"900s\" / \"15m\")", s)
+	}
+	if d <= 0 {
+		return 0, fmt.Errorf("must be positive, got %q", s)
+	}
+	return d, nil
 }
 
 // RequiresAPIKey 返回该 provider 是否必须显式配置 api_key。
@@ -102,12 +131,12 @@ type RoleConfig struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
-// knownRoles 支持的角色名。
+// knownRoles 支持的可配置角色名。Arbiter 当前不开放角色级配置，
+// 统一使用顶层默认模型（host.arbiterModel 用 models.Default）。
 var knownRoles = map[string]bool{
-	"coordinator": true,
-	"architect":   true,
-	"writer":      true,
-	"editor":      true,
+	"architect": true,
+	"writer":    true,
+	"editor":    true,
 }
 
 // Config 小说应用配置。
@@ -160,7 +189,7 @@ func (b BudgetConfig) Enabled() bool { return b.BookUSD > 0 }
 type NotifyConfig struct {
 	Enabled *bool    `json:"enabled,omitempty"` // 缺省 true（system 通道零配置可用）
 	Command string   `json:"command,omitempty"` // 可选，配置后替代 system 通道（手机推送走这里）
-	Events  []string `json:"events,omitempty"`  // 可选，过滤 kind（run_end/repeat/budget），缺省全开
+	Events  []string `json:"events,omitempty"`  // 可选，按 notify.Kinds 过滤；缺省全开
 }
 
 // IsEnabled 返回告警是否启用（缺省 true）。
@@ -220,7 +249,7 @@ func (c *Config) ValidateBase() error {
 			return err
 		}
 		if !knownRoles[role] {
-			return fmt.Errorf("unknown role %q in roles config (valid: coordinator/architect/writer/editor): %w", role, errs.ErrConfig)
+			return fmt.Errorf("unknown role %q in roles config (valid: architect/writer/editor): %w", role, errs.ErrConfig)
 		}
 		if rc.Provider == "" || rc.Model == "" {
 			return fmt.Errorf("role %q must have both provider and model: %w", role, errs.ErrConfig)
@@ -260,15 +289,13 @@ func (c *Config) ValidateBase() error {
 		return err
 	}
 	for _, ev := range c.Notify.Events {
-		if !knownNotifyEvents[ev] {
-			return fmt.Errorf("unknown notify event %q (valid: run_end/repeat/budget): %w", ev, errs.ErrConfig)
+		if !notify.IsKnownKind(ev) {
+			return fmt.Errorf("unknown notify event %q (valid: %s): %w", ev, strings.Join(notify.Kinds(), "/"), errs.ErrConfig)
 		}
 	}
 
 	return nil
 }
-
-var knownNotifyEvents = map[string]bool{"run_end": true, "repeat": true, "budget": true}
 
 func validateProviderConfigText(name string, pc ProviderConfig) error {
 	fields := []struct {
@@ -294,6 +321,9 @@ func validateProviderConfigText(name string, pc ProviderConfig) error {
 	case "", "chat", "responses":
 	default:
 		return fmt.Errorf("provider %q api must be chat or responses: %w", name, errs.ErrConfig)
+	}
+	if _, err := pc.StreamIdleTimeoutValue(); err != nil {
+		return fmt.Errorf("provider %q stream_idle_timeout: %w: %w", name, err, errs.ErrConfig)
 	}
 	return nil
 }

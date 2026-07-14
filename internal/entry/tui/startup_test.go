@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 )
@@ -31,6 +32,34 @@ func TestEnterStartingSwitchesToWorkbenchImmediately(t *testing.T) {
 	}
 	if m.events[0].Category != "USER" || !strings.HasPrefix(m.events[0].Summary, "创作需求: ") {
 		t.Fatalf("first event = %+v, want USER prompt event", m.events[0])
+	}
+}
+
+func TestStartupFailureStaysInWorkbench(t *testing.T) {
+	m := NewModel(nil, nil, "")
+	m.width = 120
+	m.height = 40
+	m.resizeTextarea()
+	m.updateViewportSize()
+
+	m.enterStarting("写一本东方玄幻长篇")
+
+	next, _ := m.handleStartResultMsg(startResultMsg{err: errors.New("模型账户未激活")})
+	got := next.(Model)
+	if got.mode != modeRunning {
+		t.Fatalf("启动失败后 mode = %v, want modeRunning", got.mode)
+	}
+	if got.starting {
+		t.Fatal("启动失败后 starting 应复位")
+	}
+	if got.snapshot.IsRunning {
+		t.Fatal("启动失败后 snapshot 不应仍显示运行中")
+	}
+	if !strings.Contains(got.textarea.Placeholder, "启动失败") {
+		t.Fatalf("placeholder = %q", got.textarea.Placeholder)
+	}
+	if len(got.events) == 0 || got.events[len(got.events)-1].Category != "ERROR" {
+		t.Fatalf("工作台应保留启动错误事件: %+v", got.events)
 	}
 }
 

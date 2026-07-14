@@ -48,7 +48,7 @@ func TestCollectReadsStyleUsageAndToolCalls(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("save usage: %v", err)
 	}
-	writeSessionLine(t, dir, "meta/sessions/coordinator.jsonl", agentcore.Message{
+	writeSessionLine(t, dir, "meta/sessions/agents/writer-ch01.jsonl", agentcore.Message{
 		Role: agentcore.RoleAssistant,
 		Content: []agentcore.ContentBlock{
 			agentcore.ToolCallBlock(agentcore.ToolCall{Name: "dispatch"}),

@@ -24,7 +24,7 @@ type BlockHook func(agent, reason string, consecutive int32)
 
 // hardStopReasons 是无法用催促消息恢复的 provider 端拒答原因。注入
 // "必须 commit" 对它们无效，反而每次产生一次完整 LLM 调用的 token 消耗，
-// 并最终升级 escalate 后让 coordinator 重派整个 SubAgent，叠加多倍浪费
+// 并最终升级 escalate 后让 Engine 重跑整个 Worker 任务，叠加多倍浪费
 // （实测 ch02 撞 safety 时一次写章产生 3 次重派 17 次 LLM 调用、命中率
 // 从 50% 跌到 2.8%）。
 //
@@ -44,7 +44,7 @@ var hardStopReasons = map[agentcore.StopReason]struct{}{
 // 催促消息——静态消息在"必需工具本身持续报错"的场景下是误导（催模型去调一个
 // 正在失败的工具，见 #75）。
 //
-// 计数语义与 Coordinator StopGuard 的"有进展即重置"对齐：两次拦截之间出现过
+// 计数语义是"有进展即重置"：两次拦截之间出现过
 // 任何新 checkpoint（重新 draft / check 等）视为模型在推进，consecutive 归零；
 // 只有毫无产物的连续空转才累计并升级终止。
 func newCheckpointDeltaGuard(st *store.Store, agentName string, requiredSteps []string, blockMsg func(seen map[string]struct{}) string, onBlock BlockHook) agentcore.StopGuard {

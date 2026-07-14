@@ -146,7 +146,7 @@ func needsFoundation(st *store.Store, opts Options) bool {
 }
 
 // pickScale 根据章数给规划级别一个合理的初值；short ≤25, mid ≤80, 否则 long。
-// 不影响 import 本身，只影响后续续写时 Coordinator 选择 architect 提示词。
+// 不影响 import 本身，只影响后续续写时 Engine 选择 architect 任务。
 func pickScale(total int) domain.PlanningTier {
 	switch {
 	case total <= 25:

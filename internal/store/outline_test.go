@@ -190,3 +190,38 @@ func TestSaveAndLoadCompass(t *testing.T) {
 		t.Fatalf("expected 2 threads, got %d", len(loaded.OpenThreads))
 	}
 }
+
+// TestOutlineFeedbackPool 反馈池闭环:commit 落盘 → 跨重启可读 → 结构操作消费清空。
+func TestOutlineFeedbackPool(t *testing.T) {
+	dir := t.TempDir()
+	s := NewStore(dir)
+	if err := s.Outline.AppendOutlineFeedback(ChapterFeedback{Chapter: 3, Deviation: "支线膨胀", Suggestion: "下一弧收线"}); err != nil {
+		t.Fatalf("append: %v", err)
+	}
+	if err := s.Outline.AppendOutlineFeedback(ChapterFeedback{Chapter: 4, Suggestion: "反派提前登场"}); err != nil {
+		t.Fatalf("append2: %v", err)
+	}
+
+	// 跨重启(新 Store 实例)可读——不是内存态
+	s2 := NewStore(dir)
+	fbs := s2.Outline.LoadPendingOutlineFeedback()
+	if len(fbs) != 2 || fbs[0].Chapter != 3 || fbs[1].Suggestion != "反派提前登场" {
+		t.Fatalf("跨重启读取失败: %+v", fbs)
+	}
+	for _, fb := range fbs {
+		if fb.At == "" {
+			t.Fatal("At 应自动补齐")
+		}
+	}
+
+	if err := s2.Outline.ClearOutlineFeedback(); err != nil {
+		t.Fatalf("clear: %v", err)
+	}
+	if left := s2.Outline.LoadPendingOutlineFeedback(); len(left) != 0 {
+		t.Fatalf("消费后应为空: %+v", left)
+	}
+	// 幂等清空
+	if err := s2.Outline.ClearOutlineFeedback(); err != nil {
+		t.Fatalf("clear idempotent: %v", err)
+	}
+}

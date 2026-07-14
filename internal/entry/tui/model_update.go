@@ -15,6 +15,11 @@ import (
 const maxPromptEventCols = 160
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// body 高度依赖顶栏/底栏的实时高度（新建页模式栏、多行输入都会改变它），
+	// 每条消息前同步一次，避免 viewport 停在旧高度、面板底部补空行。幂等且廉价。
+	if m.width > 0 {
+		m.updateViewportSize()
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
@@ -317,8 +322,8 @@ func (m Model) handleEnterKey() (tea.Model, tea.Cmd) {
 		return m, steerRuntime(m.runtime, text)
 	case modeDone:
 		// 完结后用户输入（返工/续写诉求）：唤醒新一轮 run。Continue 在停机态走 Inject
-		// 自动恢复，Coordinator 收到 [用户干预] 后按 coordinator.md 路由——要求返工已写章
-		// 则调 reopen_book 把书重开进返工态。切回 modeRunning 重入工作台；本轮跑完
+		// 自动恢复，Arbiter 裁定用户干预；返工已写章时由 Engine 重开全书并入队。
+		// 切回 modeRunning 重入工作台；本轮跑完
 		// doneMsg(complete) 会再置 modeDone。斜杠命令已在上面提前处理，不经此分支。
 		m.mode = modeRunning
 		return m, continueRuntime(m.runtime, text)
@@ -460,7 +465,7 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			m.abortPending = false
 			m.mode = modeDone
 			// 完成态不锁输入框：停止自动续写，但用户仍可输入返工要求（modeDone 输入经
-			// Continue 唤醒新一轮 run，Coordinator 路由到 reopen_book），/export、/model
+			// Continue 唤醒新一轮 run，Arbiter 裁定返工或继续创作；/export、/model
 			// 等命令也需可用，输入框必须保持聚焦（issue #27、#38）。
 			m.textarea.Placeholder = "创作已完成 · 可输入返工要求(如\"重写第3章\")、/export 导出，或输入 / 看命令"
 			return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime), m.textarea.Focus()), true
@@ -560,9 +565,9 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case toolSpinnerTickMsg:
 		m.toolSpinnerIdx = (m.toolSpinnerIdx + 1) % len(toolSpinnerFrames)
 		// 事件流"进行中"行的 spinner 刷新（150ms，独立节奏）。
-		// spinner 帧只影响 running 事件行，已完成行的渲染输出 byte-for-byte 相同；
-		// 没有 running 事件时整个重渲是无意义的，跳过。
-		if m.snapshot.IsRunning && m.hasRunningEvent() {
+		// Arbiter 可在 Engine 停机态处理 Continue/查询，因此不能用 snapshot.IsRunning
+		// 作为动画前提；只要存在调用类 running 事件就刷新。没有时跳过全量重渲。
+		if m.hasRunningEvent() {
 			m.refreshEventViewport()
 		}
 		return m, tickToolSpinner(), true
@@ -631,10 +636,15 @@ func (m Model) handleStartResultMsg(msg startResultMsg) (tea.Model, tea.Cmd) {
 			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus())
 		}
 		if wasStarting {
-			m.mode = modeNew
+			// 回车后已经进入工作台；启动阶段的 LLM 错误就在当前工作台展示，
+			// 不再退回欢迎页。
+			m.mode = modeRunning
 			m.snapshot.IsRunning = false
-			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)
-			return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus(), tea.DisableMouse)
+			m.snapshot.RuntimeState = "idle"
+			m.textarea.Placeholder = "启动失败，请检查模型配置或使用 /model 切换模型"
+			m.refreshStreamViewport()
+			m.refreshStateViewport()
+			return m, m.textarea.Focus()
 		}
 		if m.mode == modeNew {
 			m.textarea.Placeholder = placeholderForNewMode(m.startupMode)

@@ -12,7 +12,7 @@ import (
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
-// ReopenBookTool 把已完结的书重新打开进入返工态（仅 Coordinator 持有）。
+// ReopenBookTool 把已完结的书重新打开进入返工态，由 Engine 在干预动作边界调用。
 // 完本后 completePhaseGate 硬拦一切 subagent 派发，用户无法返工已写章节。
 // 本工具不是 subagent，complete 期可调：它原子地把 phase 切回 writing、目标章入
 // PendingRewrites、flow=rewriting，随后 Flow Router 照既有返工队列派 writer 逐章重写，
@@ -38,7 +38,9 @@ func (t *ReopenBookTool) Description() string {
 func (t *ReopenBookTool) ReadOnly(_ json.RawMessage) bool        { return false }
 func (t *ReopenBookTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
 
-func (t *ReopenBookTool) ActivityDescription(_ json.RawMessage) string { return "重新打开全书返工" }
+func (t *ReopenBookTool) ActivityDescription(_ json.RawMessage) string {
+	return "重新打开全书返工"
+}
 
 func (t *ReopenBookTool) Schema() map[string]any {
 	return schema.Object(

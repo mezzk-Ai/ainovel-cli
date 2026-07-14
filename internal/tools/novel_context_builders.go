@@ -93,8 +93,8 @@ func mergeContextSection(result map[string]any, section map[string]any) {
 	}
 }
 
-// buildProgressStatus 仅在 Coordinator 调用（不传 chapter）时返回进度摘要,
-// Writer 不需要这些信息,避免干扰写作。
+// buildProgressStatus 在 Architect 不传 chapter 时返回进度摘要。
+// Writer/Editor 的章节路径不需要这些信息，避免干扰写作。
 func (t *ContextTool) buildProgressStatus(result map[string]any) {
 	progress, err := t.store.Progress.Load()
 	if err != nil || progress == nil {
@@ -128,7 +128,7 @@ func (t *ContextTool) buildProgressStatus(result map[string]any) {
 
 // buildUserRules 把合并后的 Bundle 注入 working_memory.user_rules（canonical 路径）。
 //
-// 单点注入：writer / editor / architect / coordinator 任一路径调用 novel_context
+// 单点注入：writer / editor / architect 任一路径调用 novel_context
 // 都能在 working_memory.user_rules 拿到一致的偏好。architect 路径原本没有 working_memory，
 // 由本函数按需新建（仅装 user_rules）；chapter > 0 路径下 working_memory 已存在，直接嵌入。
 //
@@ -139,7 +139,7 @@ func (t *ContextTool) buildProgressStatus(result map[string]any) {
 func (t *ContextTool) buildUserRules(result map[string]any) {
 	snap, err := t.store.UserRules.Load()
 	if err != nil || snap == nil {
-		// 快照未生成（老书首次/异常）：退到代码内置默认，保证机械底线（字数/禁语/疲劳词）始终存在。
+		// 快照尚未初始化时使用代码内置默认，保证机械底线（字数/禁语/疲劳词）始终存在。
 		def := rules.BuildSnapshot([]rules.Candidate{rules.SystemDefaults()})
 		snap = &def
 	}
@@ -685,6 +685,11 @@ func (t *ContextTool) buildArchitectFoundation(envelope *architectContextEnvelop
 		warn("foreshadow_ledger", err)
 	}
 	envelope.Foundation["foundation_status"] = t.foundationStatus()
+	// Writer 反馈池:commit_chapter 落盘的大纲偏离/建议,规划下一弧/卷时必须参考;
+	// expand_arc / append_volume / update_compass 成功后自动清空(已消费)。
+	if fbs := t.store.Outline.LoadPendingOutlineFeedback(); len(fbs) > 0 {
+		envelope.Foundation["writer_feedback"] = fbs
+	}
 }
 
 func (t *ContextTool) buildArchitectReferences(envelope *architectContextEnvelope, warn func(string, error)) {

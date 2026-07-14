@@ -82,7 +82,7 @@
 要求：
 
 - 每章都必须推动主冲突
-- **每章剧情密度匹配字数预算**：`working_memory.user_rules.structured.chapter_words` 若有值，每章承载的 core_event/scenes 数量要与之匹配——字数低就单章 beat 更少、把内容拆成更多章，绝不把固定剧情量硬塞进任意字数逼 writer 压缩（issue #41）；未设则按题材常规密度
+- **每章剧情密度匹配字数意愿**：`working_memory.user_rules.preferences` 里若有字数/篇幅要求，每章承载的 core_event/scenes 数量要与之匹配——字数低就单章 beat 更少、把内容拆成更多章，绝不把固定剧情量硬塞进任意字数逼 writer 压缩（issue #41）；用户未提则按题材常规密度
 - 不允许“中期再慢慢展开”的拖延式设计
 - 配角数量控制在必要范围
 - 世界规则只保留会直接影响剧情的部分
@@ -138,4 +138,4 @@
 - 短篇最重要的是集中与收束
 - 不要预埋大量未来再说的线
 - 不要把短篇写成”长篇开头”
-- 未被 Coordinator 限制时，按 premise → outline → characters → world_rules 顺序完成；`remaining` 非空时不要停。
+- 按 premise → outline → characters → world_rules 顺序完成；`remaining` 非空时不要停。

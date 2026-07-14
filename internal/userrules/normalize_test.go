@@ -38,9 +38,9 @@ func TestCoerceUncertain_HandlesAllDriftForms(t *testing.T) {
 		want int // 期望条目数（>0 即可，验证不丢）
 	}{
 		{"array_of_string", `["少用比喻：无阈值"]`, 1},
-		{"plain_string", `"chapter_words 太模糊未提升"`, 1},
+		{"plain_string", `"字数要求太模糊未提升"`, 1},
 		{"array_of_object", `[{"item":"少用比喻","reason":"无明确阈值"}]`, 1},
-		{"array_of_field_object", `[{"field":"chapter_words.min","reason":"未给下限"}]`, 1},
+		{"array_of_field_object", `[{"field":"fatigue_words.仿佛","reason":"未给阈值"}]`, 1},
 		{"empty_array", `[]`, 0},
 		{"empty_string", `""`, 0},
 	}
@@ -56,7 +56,7 @@ func TestCoerceUncertain_HandlesAllDriftForms(t *testing.T) {
 
 func TestParseNormalizerJSON_FullOutput(t *testing.T) {
 	raw := "```json\n" + `{
-  "structured": {"chapter_words": {"min": 1200, "max": 1600}, "forbidden_phrases": ["某种程度上"]},
+  "structured": {"genre": "都市", "forbidden_phrases": ["某种程度上"]},
   "preferences": "主角冷静克制",
   "uncertain": [{"item": "少用比喻", "reason": "无阈值"}]
 }` + "\n```"
@@ -64,8 +64,8 @@ func TestParseNormalizerJSON_FullOutput(t *testing.T) {
 	if !ok {
 		t.Fatal("应解析成功")
 	}
-	if out.Structured.ChapterWords == nil || out.Structured.ChapterWords.Min != 1200 {
-		t.Fatalf("chapter_words 解析错误：%+v", out.Structured.ChapterWords)
+	if out.Structured.Genre != "都市" {
+		t.Fatalf("genre 解析错误：%+v", out.Structured)
 	}
 	if len(out.Structured.ForbiddenPhrases) != 1 || out.Structured.ForbiddenPhrases[0] != "某种程度上" {
 		t.Fatalf("forbidden_phrases 解析错误：%v", out.Structured.ForbiddenPhrases)
@@ -97,7 +97,7 @@ func TestNormalize_NilModelDegrades(t *testing.T) {
 	if cand.Preferences == "" {
 		t.Fatal("降级应保留原文为 preferences")
 	}
-	if cand.Structured.ChapterWords != nil {
+	if !cand.Structured.IsEmpty() {
 		t.Fatal("降级不应产出 structured")
 	}
 }
@@ -140,16 +140,16 @@ func (m *scriptedModel) SupportsTools() bool { return false }
 func TestNormalize_FeedbackRetryRecovers(t *testing.T) {
 	model := &scriptedModel{replies: []string{
 		"这不是 JSON",
-		`{"structured":{"chapter_words":{"min":1200,"max":1600}},"preferences":"","uncertain":[]}`,
+		`{"structured":{"forbidden_phrases":["某种程度上"]},"preferences":"","uncertain":[]}`,
 	}}
 	n := NewNormalizer(model)
 
-	cand := n.Normalize(t.Context(), "startup_prompt", "每章1200到1600字")
+	cand := n.Normalize(t.Context(), "startup_prompt", "不要出现某种程度上")
 	if cand.Degraded {
 		t.Fatal("次轮已返回合法 JSON，不应降级")
 	}
-	if cand.Structured.ChapterWords == nil || cand.Structured.ChapterWords.Min != 1200 {
-		t.Fatalf("应解析出 chapter_words，got %+v", cand.Structured)
+	if len(cand.Structured.ForbiddenPhrases) != 1 {
+		t.Fatalf("应解析出 forbidden_phrases，got %+v", cand.Structured)
 	}
 	if model.calls != 2 {
 		t.Fatalf("应在第 2 次成功，实际调用 %d 次", model.calls)

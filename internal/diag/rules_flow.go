@@ -85,7 +85,7 @@ func OrphanedSteer(snap *Snapshot) []Finding {
 		Target:     "runtime.recovery",
 		Title:      "存在未消费的转向指令",
 		Evidence:   fmt.Sprintf("pending_steer=%q, flow=%s", truncStr(snap.RunMeta.PendingSteer, 60), flowStr(snap.Progress)),
-		Suggestion: "该 steer 被持久化但未被 Coordinator 消费。检查中断恢复逻辑，或通过重新提交覆盖。",
+		Suggestion: "该 steer 被持久化但未被干预裁定流程消费。检查中断恢复逻辑，或通过重新提交覆盖。",
 	}}
 }
 

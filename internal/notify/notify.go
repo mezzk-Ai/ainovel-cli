@@ -8,6 +8,7 @@ package notify
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"log/slog"
 	"os"
 	"os/exec"
@@ -18,10 +19,43 @@ import (
 
 // Notification 一条告警的全部事实。
 type Notification struct {
-	Kind  string `json:"kind"`  // run_end / repeat / budget / pause_point
+	Kind  string `json:"kind"`  // Kinds 返回的稳定事件名
 	Level string `json:"level"` // info / warn / error
 	Title string `json:"title"`
 	Body  string `json:"body"`
+}
+
+const (
+	KindRunEnd        = "run_end"
+	KindBudget        = "budget"
+	KindAdvanceGate   = "advance_gate"
+	KindStopGuard     = "stop_guard"
+	KindPlanStart     = "plan_start"
+	KindDeadlock      = "deadlock"
+	KindWorkerFailure = "worker_failure"
+)
+
+// Kinds 返回当前版本可用于 notify.events 的全部事件名。
+// 这里是通知事件契约的唯一事实源。
+func Kinds() []string {
+	return []string{
+		KindRunEnd,
+		KindBudget,
+		KindAdvanceGate,
+		KindStopGuard,
+		KindPlanStart,
+		KindDeadlock,
+		KindWorkerFailure,
+	}
+}
+
+func IsKnownKind(kind string) bool {
+	for _, known := range Kinds() {
+		if kind == known {
+			return true
+		}
+	}
+	return false
 }
 
 // Notifier 按配置分发通知。零值不可用，必须经 New 创建；nil 安全（Send noop）。
@@ -31,8 +65,8 @@ type Notifier struct {
 	timeout time.Duration
 }
 
-// New 创建 Notifier。command 为空走内置 system 通道（macOS osascript /
-// Linux notify-send，找不到命令静默降级为仅 slog）；events 非空时只放行列出的 kind。
+// New 创建 Notifier。command 为空走内置 system 通道（Windows 通知气泡 /
+// macOS osascript / Linux notify-send）；events 非空时只放行列出的 kind。
 func New(command string, events []string) *Notifier {
 	n := &Notifier{command: strings.TrimSpace(command), timeout: 10 * time.Second}
 	if len(events) > 0 {
@@ -62,7 +96,6 @@ func (n *Notifier) allows(kind string) bool {
 
 // deliver 同步执行一次发送（goroutine 内运行；测试可直接调用以同步断言）。
 func (n *Notifier) deliver(nt Notification) {
-	defer func() { recover() }()
 	ctx, cancel := context.WithTimeout(context.Background(), n.timeout)
 	defer cancel()
 
@@ -80,21 +113,36 @@ func (n *Notifier) deliver(nt Notification) {
 // runCommand 执行用户配置的命令：字段经环境变量传入（一行 curl 零依赖、无注入
 // 风险），完整 JSON 同时写 stdin（复杂分发场景自行解析）。超时由 ctx 强杀。
 func runCommand(ctx context.Context, command string, nt Notification) error {
-	cmd := exec.CommandContext(ctx, "sh", "-c", command)
-	cmd.Env = append(os.Environ(),
-		"NOTIFY_KIND="+nt.Kind,
-		"NOTIFY_LEVEL="+nt.Level,
-		"NOTIFY_TITLE="+nt.Title,
-		"NOTIFY_BODY="+nt.Body,
-	)
+	var cmd *exec.Cmd
+	if runtime.GOOS == "windows" {
+		powershell, err := findPowerShell()
+		if err != nil {
+			return err
+		}
+		cmd = exec.CommandContext(ctx, powershell, "-NoLogo", "-NoProfile", "-NonInteractive", "-Command", command)
+	} else {
+		cmd = exec.CommandContext(ctx, "sh", "-c", command)
+	}
+	cmd.Env = notificationEnv(nt)
 	payload, _ := json.Marshal(nt)
 	cmd.Stdin = strings.NewReader(string(payload))
 	return cmd.Run()
 }
 
+func notificationEnv(nt Notification) []string {
+	return append(os.Environ(),
+		"NOTIFY_KIND="+nt.Kind,
+		"NOTIFY_LEVEL="+nt.Level,
+		"NOTIFY_TITLE="+nt.Title,
+		"NOTIFY_BODY="+nt.Body,
+	)
+}
+
 // runSystem 内置桌面通知：只覆盖"人在电脑旁"的场景，找不到命令静默降级。
 func runSystem(ctx context.Context, nt Notification) error {
 	switch runtime.GOOS {
+	case "windows":
+		return runWindowsNotification(ctx, nt)
 	case "darwin":
 		script := "display notification " + appleScriptString(nt.Body) + " with title " + appleScriptString(nt.Title)
 		return exec.CommandContext(ctx, "osascript", "-e", script).Run()
@@ -109,6 +157,46 @@ func runSystem(ctx context.Context, nt Notification) error {
 		return nil
 	}
 }
+
+// runWindowsNotification 使用系统自带 PowerShell + WinForms NotifyIcon。
+// Windows 10/11 会把气泡显示在右上角并纳入系统通知体验；无需安装模块、注册应用
+// 或携带额外二进制。调用方本就异步执行，短暂保活只用于让系统接收气泡消息。
+func runWindowsNotification(ctx context.Context, nt Notification) error {
+	powershell, err := findPowerShell()
+	if err != nil {
+		return err
+	}
+	cmd := exec.CommandContext(ctx, powershell,
+		"-NoLogo", "-NoProfile", "-NonInteractive", "-STA", "-Command", windowsNotificationScript)
+	cmd.Env = notificationEnv(nt)
+	return cmd.Run()
+}
+
+func findPowerShell() (string, error) {
+	for _, name := range []string{"powershell.exe", "pwsh.exe", "powershell", "pwsh"} {
+		if path, err := exec.LookPath(name); err == nil {
+			return path, nil
+		}
+	}
+	return "", fmt.Errorf("Windows 通知需要 PowerShell，但系统未找到 powershell.exe 或 pwsh.exe")
+}
+
+const windowsNotificationScript = `$ErrorActionPreference = 'Stop'
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Icon = [System.Drawing.SystemIcons]::Information
+$notify.BalloonTipTitle = $env:NOTIFY_TITLE
+$notify.BalloonTipText = $env:NOTIFY_BODY
+$notify.BalloonTipIcon = switch ($env:NOTIFY_LEVEL) {
+  'error' { [System.Windows.Forms.ToolTipIcon]::Error; break }
+  'warn'  { [System.Windows.Forms.ToolTipIcon]::Warning; break }
+  default { [System.Windows.Forms.ToolTipIcon]::Info }
+}
+$notify.Visible = $true
+$notify.ShowBalloonTip(4000)
+Start-Sleep -Milliseconds 4500
+$notify.Dispose()`
 
 // appleScriptString 把任意文本包装为 AppleScript 字符串字面量。
 func appleScriptString(s string) string {

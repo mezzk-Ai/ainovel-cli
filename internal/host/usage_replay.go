@@ -31,11 +31,11 @@ type sessionRecordMeta struct {
 	Model    string `json:"model,omitempty"`
 }
 
-// ReplaySessions 扫 meta/sessions/coordinator.jsonl 与 meta/sessions/agents/*.jsonl，
+// ReplaySessions 扫 meta/sessions/agents/*.jsonl，
 // 把每条 assistant 消息的 usage 重新累加到 tracker。返回回填条数。
 //
-// 调用约束：仅在 meta/usage.json 缺失（首次升级或 schema 变更）时调用一次，做
-// 历史数据回填。日常持久化走 SaveNow / autoSaveLoop。
+// 调用约束：仅在 meta/usage.json 缺失时调用一次回填。
+// 日常持久化走 SaveNow / autoSaveLoop。
 //
 // 精度依赖见 sessionRecord 注释的三级降级——第 3 级（Usage 和 _meta 都缺）
 // 在更老日志或上游异常时才会触发。
@@ -56,12 +56,6 @@ func (t *UsageTracker) ReplaySessions(rootDir string) (int, error) {
 	}
 
 	total := 0
-	if n, err := t.replayFile(filepath.Join(sessionsDir, "coordinator.jsonl"), "coordinator"); err != nil {
-		slog.Warn("replay coordinator session failed", "module", "usage", "err", err)
-	} else {
-		total += n
-	}
-
 	agentsDir := filepath.Join(sessionsDir, "agents")
 	walkErr := filepath.WalkDir(agentsDir, func(path string, d fs.DirEntry, err error) error {
 		if err != nil {
@@ -96,7 +90,7 @@ func (t *UsageTracker) ReplaySessions(rootDir string) (int, error) {
 }
 
 // replayFile 扫单个 jsonl 文件，把所有带 Usage 的 assistant 消息喂给 accumulate。
-// agentName 由调用方传入（coordinator 或文件名解析的 sub-agent 名）。
+// agentName 由调用方从 Worker 会话文件名解析。
 func (t *UsageTracker) replayFile(path, agentName string) (int, error) {
 	f, err := os.Open(path)
 	if err != nil {

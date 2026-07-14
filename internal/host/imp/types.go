@@ -4,8 +4,7 @@
 // commit_chapter 工具的原子三件套落盘。导入完成后 store 状态等同于"写完 N 章
 // 后崩溃"，调用方调 host.Resume() 即可无缝续写。
 //
-// 不走 Coordinator：导入是确定性回放，不属于 LLM 决策范畴；让 Coordinator
-// 介入只会引入不确定性。本包直接调 LLM 客户端 + 调工具。
+// 导入是确定性回放，不属于 LLM 决策范畴。本包直接调 LLM 客户端 + 工具。
 package imp
 
 import "time"

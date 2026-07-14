@@ -259,7 +259,6 @@ func validSynthesisJSON(note string) string {
     "anti_patterns": ["flat exposition"]
   },
   "role_guidance": {
-    "coordinator": ["keep later tasks aligned with the simulation profile"],
     "architect": ["design arcs with repeated cost escalation"],
     "writer": ["borrow techniques, never copy text"],
     "editor": ["check imitation stays structural rather than plagiaristic"]

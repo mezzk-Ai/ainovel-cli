@@ -1,9 +1,11 @@
 package store
 
 import (
+	"encoding/json"
 	"fmt"
 	"os"
 	"strings"
+	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 )
@@ -384,4 +386,65 @@ func renderOutline(entries []domain.OutlineEntry) string {
 		}
 	}
 	return b.String()
+}
+
+// ── Writer 大纲反馈池 ──
+//
+// commit_chapter 的 feedback(偏离/建议)持久化于此,architect 下次结构操作
+// (expand_arc / append_volume / update_compass)经 novel_context 消费后清空。
+// 事实闭环:工具落盘 → 上下文注入 → 结构操作即消费(docs/engine-arbiter.md 阻断1)。
+
+// ChapterFeedback 一条带章节号的大纲反馈。
+type ChapterFeedback struct {
+	Chapter    int    `json:"chapter"`
+	Deviation  string `json:"deviation,omitempty"`
+	Suggestion string `json:"suggestion,omitempty"`
+	At         string `json:"at"`
+}
+
+const outlineFeedbackFile = "meta/outline_feedback.jsonl"
+
+// AppendOutlineFeedback 追加一条 writer 反馈(best-effort 附属事实,不参与 commit 原子性)。
+func (s *OutlineStore) AppendOutlineFeedback(fb ChapterFeedback) error {
+	if fb.At == "" {
+		fb.At = time.Now().Format(time.RFC3339)
+	}
+	data, err := json.Marshal(fb)
+	if err != nil {
+		return err
+	}
+	return s.io.AppendLine(outlineFeedbackFile, append(data, '\n'))
+}
+
+// LoadPendingOutlineFeedback 读取未消费的反馈(旧→新);损坏行跳过。
+func (s *OutlineStore) LoadPendingOutlineFeedback() []ChapterFeedback {
+	s.io.mu.RLock()
+	defer s.io.mu.RUnlock()
+	data, err := os.ReadFile(s.io.path(outlineFeedbackFile))
+	if err != nil {
+		return nil
+	}
+	var out []ChapterFeedback
+	for _, line := range strings.Split(string(data), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		var fb ChapterFeedback
+		if json.Unmarshal([]byte(line), &fb) == nil {
+			out = append(out, fb)
+		}
+	}
+	return out
+}
+
+// ClearOutlineFeedback 清空反馈池(architect 结构操作成功 = 反馈已被参考)。
+func (s *OutlineStore) ClearOutlineFeedback() error {
+	s.io.mu.Lock()
+	defer s.io.mu.Unlock()
+	err := os.Remove(s.io.path(outlineFeedbackFile))
+	if err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	return nil
 }

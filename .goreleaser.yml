@@ -4,6 +4,8 @@ version: 2
 before:
   hooks:
     - go mod tidy
+    - go vet ./...
+    - go test -count=1 ./...
 
 builds:
   - id: ainovel-cli

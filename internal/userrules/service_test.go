@@ -26,8 +26,8 @@ func TestService_Build_DegradesButPersists(t *testing.T) {
 		t.Fatalf("无模型应降级，status=%q", snap.Status)
 	}
 	// system_defaults 始终兜底机械基线。
-	if snap.Structured.ChapterWords == nil || snap.Structured.ChapterWords.Min != 3000 {
-		t.Fatalf("应保留 system_defaults 字数基线，got %+v", snap.Structured.ChapterWords)
+	if len(snap.Structured.FatigueWords) == 0 || len(snap.Structured.ForbiddenPhrases) == 0 {
+		t.Fatalf("应保留 system_defaults 机械基线，got %+v", snap.Structured)
 	}
 	// 启动 prompt 降级为 raw preferences，原文不丢。
 	if snap.Preferences == "" {
@@ -44,7 +44,7 @@ func TestService_Build_DegradesButPersists(t *testing.T) {
 	}
 }
 
-func TestService_GetOrBuild_LazyForOldBook(t *testing.T) {
+func TestService_GetOrBuildInitializesMissingSnapshot(t *testing.T) {
 	svc, st := newDegradedService(t)
 
 	if cur, _ := st.UserRules.Load(); cur != nil {
@@ -54,7 +54,7 @@ func TestService_GetOrBuild_LazyForOldBook(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetOrBuild 不应报错：%v", err)
 	}
-	if snap.Structured.ChapterWords == nil {
+	if len(snap.Structured.FatigueWords) == 0 {
 		t.Fatal("惰性生成应含 system_defaults")
 	}
 	if cur, _ := st.UserRules.Load(); cur == nil {

@@ -21,6 +21,8 @@ func writeGlobal(t *testing.T, content string) string {
 	t.Helper()
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// Windows 的 os.UserHomeDir 读 USERPROFILE；不设它会读到本机真实 ~/.ainovel。
+	t.Setenv("USERPROFILE", home)
 	dir := filepath.Join(home, ".ainovel")
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		t.Fatalf("mkdir: %v", err)
@@ -82,7 +84,8 @@ func TestLoadConfig_CorruptGlobalDoesNotBlockOverride(t *testing.T) {
 func TestLoadConfig_MissingFilesNoError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home) // ~/.ainovel/config.json 不存在
-	t.Chdir(t.TempDir())   // 也没有 ./.ainovel/config.json
+	t.Setenv("USERPROFILE", home)
+	t.Chdir(t.TempDir()) // 也没有 ./.ainovel/config.json
 
 	if _, err := LoadConfig(""); err != nil {
 		t.Fatalf("缺失配置文件不应报错，得到: %v", err)
@@ -275,6 +278,7 @@ func TestExampleConfigIsValidAndSelfConsistent(t *testing.T) {
 func TestWriteStartupError(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
 
 	path := WriteStartupError("boom: provider not configured")
 	if path == "" {

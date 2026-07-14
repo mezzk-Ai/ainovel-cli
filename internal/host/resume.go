@@ -3,58 +3,26 @@ package host
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
 	storepkg "github.com/voocel/ainovel-cli/internal/store"
 )
 
-// buildResumePrompt 基于事实生成 Resume 用的简短 prompt 与 UI 标签。
-//
-// 重构说明（2026-04-20）：所有"具体下一步应该做什么"的决策已下沉到 Host Flow Router。
-// 本函数不再替 Coordinator 规划动作，只做三件事：
-//  1. 判断是否需要恢复（Phase=Complete 或无 Progress → 返回空 label 表示新建）
-//  2. 生成适合在 UI 展示的 label（"恢复：弧末评审待处理（V2 A3）" 之类）
-//  3. 把用户停机期间留下的 PendingSteer 显式传给 Coordinator
-//
-// 返回 (prompt, label, error)。label 为空表示无可恢复状态（应走新建）。
-func buildResumePrompt(store *storepkg.Store) (string, string, error) {
+// resumeLabel 基于事实生成 Resume 的 UI 标签。
+// label 为空表示无可恢复状态（应走新建）。恢复本身不需要任何 prompt——
+// Engine 只恢复事实：从 store 重算路由续跑（docs/engine-rfc.md §6）。
+func resumeLabel(store *storepkg.Store) (string, error) {
 	progress, err := store.Progress.Load()
 	if err != nil && !os.IsNotExist(err) {
-		return "", "", err
+		return "", err
 	}
 	if progress == nil || progress.Phase == domain.PhaseComplete {
-		return "", "", nil
+		return "", nil
 	}
-
-	label := describeResume(store, progress)
-
-	var b strings.Builder
-	title := progress.NovelName
-	if title == "" {
-		title = "当前小说"
-	}
-	b.WriteString(fmt.Sprintf("[恢复] 本书「%s」", title))
-	if n := len(progress.CompletedChapters); n > 0 {
-		b.WriteString(fmt.Sprintf("已完成 %d 章", n))
-		if progress.TotalChapters > 0 {
-			b.WriteString(fmt.Sprintf("（共 %d 章）", progress.TotalChapters))
-		}
-		b.WriteString(fmt.Sprintf("，共 %d 字", progress.TotalWordCount))
-	}
-	b.WriteString("。\n")
-	b.WriteString("Host 将根据当前事实下达下一步 `[Host 下达指令]` 消息。收到后立即执行，不要先调 novel_context 推理。\n")
-
-	if meta, _ := store.RunMeta.Load(); meta != nil && meta.PendingSteer != "" {
-		b.WriteString("\n用户在停机期间留下了一条干预意见：\n「")
-		b.WriteString(meta.PendingSteer)
-		b.WriteString("」\n请先按 coordinator.md 的用户干预规则评估处理。")
-	}
-
-	return b.String(), label, nil
+	return describeResume(store, progress), nil
 }
 
-// describeResume 生成人类可读的恢复标签；不影响 Coordinator 的行为。
+// describeResume 生成人类可读的恢复标签；不影响 Engine 路由。
 // 所有执行路由由 Flow Router 按事实推导；这里仅面向 UI 的 "恢复：xxx"。
 func describeResume(store *storepkg.Store, progress *domain.Progress) string {
 	switch progress.Phase {

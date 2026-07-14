@@ -11,9 +11,9 @@ import (
 )
 
 // newFlagTestHost 造一个最小 Host，只够驱动 cocreating 标记状态机与并发守卫。
-// emitEvent 用 recover + 非阻塞 select，缓冲 events 通道即可，无需 coordinator/observer。
-// PauseForCoCreate 的运行态分支会调 coordinator.Abort（复用已验证的 Esc 暂停路径），
-// 不在此单测；这里只覆盖不依赖 coordinator 的非运行态与标记/守卫逻辑。
+// emitEvent 用 recover + 非阻塞 select，缓冲 events 通道即可，无需 observer。
+// PauseForCoCreate 的运行态分支会调 Engine Abort（复用已验证的 Esc 暂停路径），
+// 不在此单测；这里只覆盖非运行态与标记/守卫逻辑。
 func newFlagTestHost(lc lifecycle, cocreating bool) *Host {
 	return &Host{
 		lifecycle:  lc,
@@ -142,7 +142,7 @@ func TestStageCoCreate_OccupancyBlocksConcurrentEntries(t *testing.T) {
 		t.Error("共创窗口内 Continue 应被拒")
 	}
 
-	// 退出共创后占用解除（这里走 Cancel；Resume 注入路径需 coordinator，归集成验证）
+	// 退出共创后占用解除（这里走 Cancel；Resume 干预路径归集成验证）
 	h.CancelCoCreate()
 	if h.cocreating {
 		t.Fatal("退出后占用标记应解除")

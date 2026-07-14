@@ -85,15 +85,15 @@ func TestSessionStore_MetaModelSwitch(t *testing.T) {
 	}
 }
 
-// TestSessionStore_NilLookup 验证 lookup=nil 时（如 cocreate 路径）写入仍然正常，
-// 只是不带 _meta，保持向后兼容。
+// TestSessionStore_NilLookup 验证 lookup=nil 时写入仍然正常，
+// 只是不带 _meta。
 func TestSessionStore_NilLookup(t *testing.T) {
 	dir := t.TempDir()
 	s := NewSessionStore(newIO(dir))
-	logger := s.CoordinatorLogger(nil)
-	logger(makeAssistantWithUsage())
+	logger := s.SubAgentLogger(nil)
+	logger("writer", "写第 1 章", makeAssistantWithUsage())
 
-	entries := readJSONL(t, filepath.Join(dir, "meta/sessions/coordinator.jsonl"))
+	entries := readJSONL(t, filepath.Join(dir, s.subAgentPath("writer", "写第 1 章")))
 	if len(entries) != 1 {
 		t.Fatalf("entries=%d want 1", len(entries))
 	}

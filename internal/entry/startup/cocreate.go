@@ -141,7 +141,6 @@ func (s *CoCreateSession) BuildPlan() (Plan, error) {
 	return Plan{
 		Mode:        ModeCoCreate,
 		DisplayName: "共创规划",
-		StartPrompt: host.BuildStartPrompt(s.DraftPrompt()),
 		RawPrompt:   s.DraftPrompt(),
 	}, nil
 }

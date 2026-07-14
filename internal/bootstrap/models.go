@@ -7,19 +7,11 @@ import (
 	"log/slog"
 	"strings"
 	"sync"
-	"time"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/agentcore/llm"
 	"github.com/voocel/ainovel-cli/internal/errs"
 )
-
-// 长输出 + 长 ctx 场景下，reasoning-aware provider（mimo / deepseek-r1 等）
-// 思考阶段如果 server 端不流式发 reasoning delta，SSE 整段会保持沉默。
-// litellm 默认 watchdog 是 2 分钟，对 8000 字写作章节经常触发误杀。
-// 5 分钟覆盖绝大多数实测案例（参见 tasks/todo.md plan→draft 思考时长统计），
-// 仍小于 RequestTimeout 10 分钟，网络真死时仍能兜底。
-const streamIdleTimeout = 5 * time.Minute
 
 // FailoverEvent 表示一次显式 provider 切换。
 // Reason 为短标签（rate_limit / timeout / stream_idle / network），用于结构化日志。
@@ -284,10 +276,15 @@ func createModelFromConfig(providerKey, model string, pc ProviderConfig, cache m
 		providerExtra["api"] = pc.API
 	}
 
+	streamIdle, err := pc.StreamIdleTimeoutValue()
+	if err != nil {
+		return nil, fmt.Errorf("provider %s stream_idle_timeout: %w: %w", providerKey, errs.ErrConfig, err)
+	}
+
 	m, err := llm.NewModel(providerType, model,
 		llm.WithAPIKey(pc.APIKey),
 		llm.WithBaseURL(pc.BaseURL),
-		llm.WithStreamIdleTimeout(streamIdleTimeout),
+		llm.WithStreamIdleTimeout(streamIdle),
 		llm.WithProviderExtra(providerExtra),
 		llm.WithExtra(pc.ExtraBody),
 	)

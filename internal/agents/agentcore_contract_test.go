@@ -2,6 +2,7 @@ package agents
 
 // agentcore 契约测试：把本项目依赖的框架行为钉成可执行断言。
 // 每条测试标注依赖方；bump agentcore 前必须全绿——注释会过时，测试不会。
+// 全部经 subagent.Tool.Run 驱动——这是 Engine 的实际派发通道。
 //
 // 已钉死的契约：
 //  1. StopAfterTools/StopAfterToolResult 终态退出会经过 StopGuard（StopTriggerAfterTool），
@@ -11,16 +12,16 @@ package agents
 //     guard/subagent_guards.go 的 hardStopReasons 因此只需列 safety/content_filter。
 //  3. provider 拒答（safety 等非 error 停机）会以 end_turn 路径触达 StopGuard，
 //     且 info.Message.StopReason 保留原值 —— hardStopReasons 的立即升级依赖此路径。
-//  4. StopGuard 返回 InjectMessage 后模型获得新一轮；返回 Escalate 立即终止 ——
+//  4. StopGuard 返回 InjectMessage 后模型获得新一轮；返回 Escalate 立即终止，
+//     且错误链可被 errors.Is(err, agentcore.ErrStopGuard) 匹配 ——
 //     guard/stop_guard.go 的"物理不可停机"与超限升级依赖此语义。
-//  5. WithMaxToolErrors(0) 关闭熔断：工具连续报错不会被禁用 ——
-//     build.go 的 Coordinator 依赖"错误显式返回而非静默禁用 subagent 通道"。
-//  6. ToolGate 拒绝时 Reason 作为 IsError 工具结果回给模型，run 继续 ——
-//     build.go 的 completePhaseGate / writerExpandedChapterGate 依赖"拦截即教学"。
+//  5. Tool.Run 的错误保持类型化链：未注册 agent 匹配 subagent.ErrUnknownAgent ——
+//     host/engine.go 的 isDeterministicWorkerError 依赖此分类而非错误文案。
 
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"sync/atomic"
 	"testing"
@@ -84,13 +85,12 @@ func okTool(name string) agentcore.Tool {
 		})
 }
 
-// runSubagent 用给定配置跑一次 subagent 单派发。返回执行错误——StopGuard 升级
-// 终止会以 error 形式浮出（这本身也是契约），期望正常结束的用例自行断言 nil。
+// runSubagent 用给定配置经 Tool.Run（Engine 的派发通道）跑一次单派发。
+// 返回执行错误——StopGuard 升级终止会以 error 形式浮出（这本身也是契约），
+// 期望正常结束的用例自行断言 nil。
 func runSubagent(t *testing.T, cfg subagent.Config) error {
 	t.Helper()
-	tool := subagent.New(cfg)
-	_, err := tool.Execute(context.Background(),
-		json.RawMessage(`{"agent":"`+cfg.Name+`","task":"contract"}`))
+	_, err := subagent.New(cfg).Run(context.Background(), cfg.Name, "contract")
 	return err
 }
 
@@ -190,13 +190,13 @@ func TestContract_SafetyStopReachesStopGuardWithReason(t *testing.T) {
 	if got := seen.Load(); got != agentcore.StopReason("safety") {
 		t.Fatalf("StopGuard 应看到原始 stop reason safety，got %v", got)
 	}
-	if err == nil {
-		t.Fatal("Escalate 应以 error 形式浮出到 subagent 调用方")
+	if !errors.Is(err, agentcore.ErrStopGuard) {
+		t.Fatalf("Escalate 应以可 errors.Is(agentcore.ErrStopGuard) 的错误浮出，got %v", err)
 	}
 }
 
 // 契约 4：end_turn 时 InjectMessage 让模型获得新一轮且注入内容在场；
-// Escalate 立即终止，模型不再被调用。依赖方：Coordinator StopGuard 的
+// Escalate 立即终止，模型不再被调用。依赖方：Worker StopGuard 的
 // "物理不可停机 + 连续超限升级"。
 func TestContract_StopGuardInjectContinuesEscalateTerminates(t *testing.T) {
 	var sawInject atomic.Bool
@@ -226,8 +226,8 @@ func TestContract_StopGuardInjectContinuesEscalateTerminates(t *testing.T) {
 			}
 		},
 	})
-	if err == nil {
-		t.Fatal("Escalate 应以 error 形式浮出到 subagent 调用方")
+	if !errors.Is(err, agentcore.ErrStopGuard) {
+		t.Fatalf("Escalate 应以可 errors.Is(agentcore.ErrStopGuard) 的错误浮出，got %v", err)
 	}
 
 	if !sawInject.Load() {
@@ -241,85 +241,19 @@ func TestContract_StopGuardInjectContinuesEscalateTerminates(t *testing.T) {
 	}
 }
 
-// 契约 5：WithMaxToolErrors(0) 关闭熔断——工具连续报错不会被禁用，
-// 每次调用都真实执行。依赖方：Coordinator 的 subagent 主通道。
-func TestContract_MaxToolErrorsZeroNeverDisablesTool(t *testing.T) {
-	const attempts = 5
-	var execs atomic.Int32
-	failing := agentcore.NewFuncTool("flaky", "always fails", map[string]any{"type": "object"},
-		func(context.Context, json.RawMessage) (json.RawMessage, error) {
-			execs.Add(1)
-			return nil, context.DeadlineExceeded // 任意非 retryable 业务错误
-		})
-
-	model := &contractModel{fn: func(i int, _ []agentcore.Message) (*agentcore.LLMResponse, error) {
-		if i < attempts {
-			return &agentcore.LLMResponse{Message: assistantToolCall("flaky", `{}`)}, nil
-		}
-		return &agentcore.LLMResponse{Message: assistantText("give up", agentcore.StopReasonStop)}, nil
-	}}
-
-	agent := agentcore.NewAgent(
-		agentcore.WithModel(model),
-		agentcore.WithTools(failing),
-		agentcore.WithMaxTurns(attempts+2),
-		agentcore.WithMaxToolErrors(0),
-	)
-	if err := agent.Prompt(context.Background(), "go"); err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	agent.WaitForIdle()
-
-	if got := execs.Load(); got != attempts {
-		t.Fatalf("MaxToolErrors(0) 下工具应每次都真实执行（期望 %d 次），got %d——若被熔断说明契约失效", attempts, got)
-	}
-}
-
-// 契约 6：ToolGate 拒绝时 Reason 作为工具错误结果回给模型，run 继续。
-// 依赖方：completePhaseGate / writerExpandedChapterGate 的"拦截即教学"。
-func TestContract_ToolGateDenialSurfacesReasonToModel(t *testing.T) {
-	const reason = "契约：先展开下一弧再派 writer"
-	var sawReason atomic.Bool
-	var toolExecuted atomic.Bool
-
-	gated := agentcore.NewFuncTool("gated", "never runs", map[string]any{"type": "object"},
-		func(context.Context, json.RawMessage) (json.RawMessage, error) {
-			toolExecuted.Store(true)
-			return json.RawMessage(`"ran"`), nil
-		})
-
-	model := &contractModel{fn: func(i int, msgs []agentcore.Message) (*agentcore.LLMResponse, error) {
-		if i == 0 {
-			return &agentcore.LLMResponse{Message: assistantToolCall("gated", `{}`)}, nil
-		}
-		for _, m := range msgs {
-			if m.Role == agentcore.RoleTool && strings.Contains(m.TextContent(), reason) {
-				sawReason.Store(true)
-			}
-		}
-		return &agentcore.LLMResponse{Message: assistantText("understood", agentcore.StopReasonStop)}, nil
-	}}
-
-	agent := agentcore.NewAgent(
-		agentcore.WithModel(model),
-		agentcore.WithTools(gated),
-		agentcore.WithMaxTurns(5),
-		agentcore.WithToolGate(func(context.Context, agentcore.GateRequest) (*agentcore.GateDecision, error) {
-			return &agentcore.GateDecision{Allowed: false, Reason: reason}, nil
-		}),
-	)
-	if err := agent.Prompt(context.Background(), "go"); err != nil {
-		t.Fatalf("prompt: %v", err)
-	}
-	agent.WaitForIdle()
-
-	if toolExecuted.Load() {
-		t.Fatal("gate 拒绝后工具不应真实执行")
-	}
-	if !sawReason.Load() {
-		t.Fatal("gate 的 Reason 应作为工具结果回给模型（拦截即教学）")
-	}
-	if model.calls() < 2 {
-		t.Fatalf("gate 拒绝不应终止 run，模型应获得下一轮，got %d calls", model.calls())
+// 契约 5：Tool.Run 的错误保持类型化链——未注册 agent 以 subagent.ErrUnknownAgent
+// 浮出。依赖方：host/engine.go 的 isDeterministicWorkerError（"重试必然同错→
+// 直接暂停"的分类依赖 errors.Is,而非错误文案匹配）。
+func TestContract_RunUnknownAgentIsTyped(t *testing.T) {
+	tool := subagent.New(subagent.Config{
+		Name: "writer", Description: "contract",
+		Model: &contractModel{fn: func(int, []agentcore.Message) (*agentcore.LLMResponse, error) {
+			return &agentcore.LLMResponse{Message: assistantText("ok", agentcore.StopReasonStop)}, nil
+		}},
+		SystemPrompt: "test", MaxTurns: 3,
+	})
+	_, err := tool.Run(context.Background(), "ghost", "contract")
+	if !errors.Is(err, subagent.ErrUnknownAgent) {
+		t.Fatalf("未注册 agent 应匹配 subagent.ErrUnknownAgent，got %v", err)
 	}
 }

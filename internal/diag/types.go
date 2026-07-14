@@ -58,7 +58,7 @@ type ActionKind string
 
 const (
 	ActionEmitNotice      ActionKind = "emit_notice"       // 发系统提示
-	ActionEnqueueFollowUp ActionKind = "enqueue_follow_up" // 注入 coordinator follow-up
+	ActionEnqueueFollowUp ActionKind = "enqueue_follow_up" // 生成后续处理建议
 )
 
 // Action 是 Planner 根据高置信 Finding 生成的可执行动作。

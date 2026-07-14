@@ -107,7 +107,7 @@ func analyzeCheckpoints(cps []domain.Checkpoint) (current, stuck string, count i
 	return current, stuck, count
 }
 
-// captureSessions 扫描 coordinator + 最近子代理会话，脱敏聚合。
+// captureSessions 扫描最近活跃的 Worker 会话，脱敏聚合。
 func captureSessions(dir string, rc *RuntimeCapture) {
 	sessDir := filepath.Join(dir, "meta", "sessions")
 	files := sessionFiles(sessDir)
@@ -121,20 +121,11 @@ func captureSessions(dir string, rc *RuntimeCapture) {
 		// 聚合只看近端窗口：长跑里 subagent/novel_context 累计上百次是正常推进，
 		// 不是循环；真死循环是近端高度集中。
 		aggregateRepeats(f.agent, tailEvents(evs, repeatWindow), repeats, dups)
-		// 骨架尾巴优先取 coordinator——派发循环在这看得最清。
-		if f.agent == "coordinator" && len(evs) > 0 {
+		// files 按活跃时间降序；取第一个非空会话作为当前现场。
+		if len(rc.Tail) == 0 && len(evs) > 0 {
 			rc.Tail = tailEvents(evs, sessionTail)
 		}
 		rc.Sources = append(rc.Sources, "sessions/"+f.path)
-	}
-	if len(rc.Tail) == 0 {
-		// 无 coordinator 会话时退回最近一个子代理。
-		for _, f := range files {
-			if evs := scanSessionTailOnly(filepath.Join(sessDir, f.path), f.agent); len(evs) > 0 {
-				rc.Tail = tailEvents(evs, sessionTail)
-				break
-			}
-		}
 	}
 
 	rc.Repeats = topRepeats(repeats)
@@ -147,17 +138,12 @@ type sessionFile struct {
 	agent string
 }
 
-// sessionFiles 返回 coordinator.jsonl + 最近活跃的子代理会话。
+// sessionFiles 返回最近活跃的 Worker 会话。
 func sessionFiles(sessDir string) []sessionFile {
-	var out []sessionFile
-	if _, err := os.Stat(filepath.Join(sessDir, "coordinator.jsonl")); err == nil {
-		out = append(out, sessionFile{path: "coordinator.jsonl", agent: "coordinator"})
-	}
-
 	agentsDir := filepath.Join(sessDir, "agents")
 	entries, err := os.ReadDir(agentsDir)
 	if err != nil {
-		return out
+		return nil
 	}
 	type withTime struct {
 		name string
@@ -173,6 +159,7 @@ func sessionFiles(sessDir string) []sessionFile {
 		}
 	}
 	sort.Slice(agents, func(i, j int) bool { return agents[i].mod > agents[j].mod })
+	out := make([]sessionFile, 0, min(len(agents), recentAgents))
 	for i, a := range agents {
 		if i >= recentAgents {
 			break
@@ -227,26 +214,6 @@ func aggregateRepeats(agent string, evs []SkelEvent, repeats, dups map[string]in
 			dups[ev.TextSha]++
 		}
 	}
-}
-
-// scanSessionTailOnly 仅取骨架（不计聚合），用于 coordinator 缺失时的兜底尾巴。
-func scanSessionTailOnly(path, agent string) []SkelEvent {
-	f, err := os.Open(path)
-	if err != nil {
-		return nil
-	}
-	defer f.Close()
-	var evs []SkelEvent
-	sc := bufio.NewScanner(f)
-	sc.Buffer(make([]byte, 0, 64<<10), 8<<20)
-	for sc.Scan() {
-		var sl sessionLine
-		if json.Unmarshal(sc.Bytes(), &sl) != nil {
-			continue
-		}
-		evs = append(evs, redactMessage(agent, sl.Message))
-	}
-	return evs
 }
 
 func tailEvents(evs []SkelEvent, n int) []SkelEvent {

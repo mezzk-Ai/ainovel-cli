@@ -1,7 +1,6 @@
 package host
 
 import (
-	"strings"
 	"time"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -9,7 +8,7 @@ import (
 
 // Event 是 TUI 消费的结构化事件。
 //
-// 对于 TOOL / DISPATCH 两类调用事件，同一次调用的开始与结束共用一个 ID：
+// 对于 TOOL / DISPATCH / DECISION 三类调用事件，同一次调用的开始与结束共用一个 ID：
 // 开始时先发 FinishedAt 为零值的事件（TUI 渲染为"进行中"样式）；
 // 结束时再发一条同 ID 的事件，填入 FinishedAt + Duration（+ Failed），
 // TUI 按 ID 定位原行原地更新，避免"开始一行、完成又一行"的冗余。
@@ -20,45 +19,49 @@ type Event struct {
 	Time       time.Time // 首次发出时间（开始时刻）
 	FinishedAt time.Time // 零值 = 进行中；非零 = 已完成
 	Failed     bool      // 已完成但失败（仅完成态有意义）
-	Category   string    // DISPATCH / TOOL / SYSTEM / REVIEW / CHECK / ERROR / CONTEXT
+	Category   string    // DISPATCH / TOOL / DECISION / SYSTEM / REVIEW / CHECK / ERROR / CONTEXT
 	Agent      string    // 产生事件的 agent
 	Summary    string
 	Detail     string        // 完整文案，写入日志不截断供排查；为空回退 Summary。UI 只读 Summary
 	Kind       string        // 错误分类（如 stream_idle），随日志输出供过滤/告警；为空不输出
 	Level      string        // info / warn / error / success
-	Depth      int           // 0 = coordinator 层, 1 = sub-agent 层
+	Depth      int           // 0 = Engine 层, 1 = Worker 层
 	Duration   time.Duration // 完成时的执行耗时
 }
 
 // Running 返回事件是否处于进行中。
-// 仅调用类事件（有 ID 的 TOOL / DISPATCH）可能进行中；其它类型总是返回 false。
+// 仅调用类事件（有 ID 的 TOOL / DISPATCH / DECISION）可能进行中；其它类型总是返回 false。
 func (e Event) Running() bool {
 	return e.ID != "" && e.FinishedAt.IsZero()
 }
 
 // UISnapshot 是 TUI 渲染所需的聚合状态快照。
 type UISnapshot struct {
-	Provider           string
-	NovelName          string
-	ModelName          string
-	ModelContextWindow int // 当前默认模型的上下文窗口（随 /model 切换实时解析）
-	ThinkingLevel      string
-	Style              string
-	RuntimeState       string // idle / running / pausing / paused / completed
-	StatusLabel        string
-	Phase              string
-	Flow               string
-	CurrentChapter     int
-	TotalChapters      int
-	CompletedCount     int
-	TotalWordCount     int
-	InProgressChapter  int
-	PendingRewrites    []int
-	RewriteReason      string
-	PendingSteer       string
-	RecoveryLabel      string
-	IsRunning          bool
-	Agents             []AgentSnapshot
+	Provider             string
+	NovelName            string
+	ModelName            string
+	ModelContextWindow   int // 当前默认模型的上下文窗口（随 /model 切换实时解析）
+	ThinkingLevel        string
+	Style                string
+	RuntimeState         string // idle / running / pausing / paused / completed
+	StatusLabel          string
+	Phase                string
+	Flow                 string
+	CurrentChapter       int
+	TotalChapters        int
+	CompletedCount       int
+	TotalWordCount       int
+	InProgressChapter    int
+	PendingRewrites      []int
+	RewriteReason        string
+	PendingSteer         string
+	AdvanceMode          string
+	AdvancePermitChapter int
+	HasAdvanceHold       bool
+	AdvanceHoldReason    string
+	RecoveryLabel        string
+	IsRunning            bool
+	Agents               []AgentSnapshot
 
 	// 上下文
 	ContextTokens         int
@@ -198,12 +201,4 @@ func ReplayDeltaText(item domain.RuntimeQueueItem) string {
 		}
 	}
 	return ""
-}
-
-// BuildStartPrompt 将用户需求包装为 Coordinator 的启动 prompt。
-func BuildStartPrompt(prompt string) string {
-	prompt = strings.TrimSpace(prompt)
-	return "请根据以下创作要求开始创作一部小说。进入规划后，Premise 第一行必须输出 `# 书名`。章节数量由你根据故事需要自行决定；若题材与冲突天然适合长篇连载，请优先规划为分层长篇结构，而不是压缩成短篇式梗概。\n\n[创作要求]\n" +
-		prompt +
-		"\n\n若某些细节未明确，请在不违背用户方向的前提下自行补全。"
 }

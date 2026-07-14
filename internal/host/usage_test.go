@@ -1,11 +1,50 @@
 package host
 
 import (
+	"encoding/json"
+	"os"
+	"path/filepath"
 	"testing"
 
 	"github.com/voocel/agentcore"
 	"github.com/voocel/ainovel-cli/internal/models"
 )
+
+func TestUsageTrackerReplaySessionsReadsWorkerLogs(t *testing.T) {
+	dir := t.TempDir()
+	sessionsDir := filepath.Join(dir, "meta", "sessions", "agents")
+	if err := os.MkdirAll(sessionsDir, 0o755); err != nil {
+		t.Fatalf("mkdir sessions: %v", err)
+	}
+	rec := sessionRecord{
+		Role: agentcore.RoleAssistant,
+		Usage: &agentcore.Usage{
+			Input: 1200, Output: 300, CacheRead: 800,
+		},
+		Meta: &sessionRecordMeta{Provider: "openrouter", Model: "test-model"},
+	}
+	data, err := json.Marshal(rec)
+	if err != nil {
+		t.Fatalf("marshal session: %v", err)
+	}
+	data = append(data, '\n')
+	if err := os.WriteFile(filepath.Join(sessionsDir, "writer-ch01.jsonl"), data, 0o644); err != nil {
+		t.Fatalf("write session: %v", err)
+	}
+
+	tk := NewUsageTracker(nil, nil)
+	n, err := tk.ReplaySessions(dir)
+	if err != nil {
+		t.Fatalf("ReplaySessions: %v", err)
+	}
+	if n != 1 {
+		t.Fatalf("replayed messages = %d, want 1", n)
+	}
+	_, input, output, cacheRead, _ := tk.Totals()
+	if input != 1200 || output != 300 || cacheRead != 800 {
+		t.Fatalf("replayed totals = input:%d output:%d cache:%d", input, output, cacheRead)
+	}
+}
 
 // makeUsageMsg 构造一条 OnMessage 回调能接受的消息（带 Usage）。
 // Role 必须显式置成 assistant：UsageTracker.Record 现在按角色筛，

@@ -65,7 +65,7 @@ func RunCase(cfg bootstrap.Config, bundle assets.Bundle, c Case, opts RunOptions
 	if err := eng.PrepareUserRules(plan.RawPrompt); err != nil {
 		return fmt.Errorf("准备用户规则: %w", err)
 	}
-	if err := eng.StartPrepared(plan.StartPrompt); err != nil {
+	if err := eng.StartPrepared(plan.RawPrompt); err != nil {
 		return fmt.Errorf("启动: %w", err)
 	}
 

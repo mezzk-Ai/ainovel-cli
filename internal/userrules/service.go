@@ -12,8 +12,8 @@ import (
 // Service 编排用户规则快照的生成与更新：归一化各来源 → 确定性合并 → 落盘。
 //
 // 两个调用方共用同一套逻辑：
-//   - 开书/刷新（启动侧，确定性）：Build / GetOrBuild，由 Host 直接调用，不经 Coordinator。
-//   - 运行中更新（Coordinator 工具）：AddRuntimeRule，save_user_rules 工具壳复用。
+//   - 开书/刷新：Build / GetOrBuild，由 Host 确定性调用。
+//   - 运行中更新：Arbiter 提取 rules 后，Host 调用 AddRuntimeRule。
 type Service struct {
 	store     *store.Store
 	norm      *Normalizer
@@ -43,8 +43,8 @@ func (s *Service) Build(ctx context.Context, startupPrompt string) (*rules.Snaps
 	return &snap, nil
 }
 
-// GetOrBuild 返回当前快照；老书无快照时惰性生成（无启动 prompt 原文，故只含
-// system_defaults + rules 文件）。运行时读取路径统一走这里。
+// GetOrBuild 返回当前快照；缺失时按 system_defaults + rules 文件初始化。
+// 运行时读取路径统一走这里。
 func (s *Service) GetOrBuild(ctx context.Context) (*rules.Snapshot, error) {
 	cur, err := s.store.UserRules.Load()
 	if err != nil {
@@ -58,7 +58,7 @@ func (s *Service) GetOrBuild(ctx context.Context) (*rules.Snapshot, error) {
 
 // AddRuntimeRule 归一化一条运行中长期规则，以最高优先级叠加到当前快照并落盘。
 // 永不因归一化失败而报错——失败时该条降级为 raw preferences。
-// 返回叠加后的快照与本次的归一化候选（后者供 save_user_rules 回显"理解成了什么"给用户确认）。
+// 返回叠加后的快照与本次的归一化候选。
 func (s *Service) AddRuntimeRule(ctx context.Context, text string) (*rules.Snapshot, rules.Candidate, error) {
 	cur, err := s.GetOrBuild(ctx)
 	if err != nil {

@@ -11,10 +11,11 @@
 ```
 1. /diag                       # 自动诊断，看 Findings 区
 2. cd output/{novel}/meta/     # 直接 cat 关键工件
-3. cat meta/sessions/coordinator.jsonl | tail  # 看最近几轮 LLM 行为
+3. tail decisions.jsonl                # 看最近 Arbiter 裁定
+4. ls -lt sessions/agents/             # 定位最近 Worker 会话后再 tail
 ```
 
-`/diag` 覆盖不到的事实（包括本文档列出的"待补诊断"项），需要 step 2-3 手工查。
+`/diag` 覆盖不到的事实（包括本文档列出的"待补诊断"项），需要 step 2-4 手工查。
 
 ### 报 issue：脱敏诊断导出
 
@@ -35,7 +36,7 @@
 | 大纲 | `meta/layered_outline.json` | 当前卷剩余未写章数 | 提前 1-2 章已展开 | 写到当前章但下一章无 outline（OutlineExhausted） |
 | 角色档案 | `meta/characters.json` | 是否能在最近 N 章摘要里找到 core/important 角色 | 都能找到 | 缺席（GhostCharacter 命中） |
 | 检查点 | `meta/checkpoints.jsonl` | 最近一行的 `step` 是否对应 progress | 一致 | 不一致（崩溃恢复未自愈） |
-| Coordinator 会话 | `meta/sessions/coordinator.jsonl` | 最近 5-10 轮的 tool_call 模式 | 单轮快速推进 | 同一工具空调多次（卡死循环） |
+| 裁定审计 | `meta/decisions.jsonl` | 最近若干条裁定的 facts/decision | 分诊准确、动作合理 | 同类干预反复裁定失败 |
 
 ---
 
@@ -150,7 +151,7 @@ tail -50 output/{novel}/meta/sessions/agents/writer-*.jsonl
 - [ ] cast_ledger 中 brief_role 填写率 < 30%
 - [ ] 同一角色出现疑似多名（"老李" / "李掌柜" 共存）
 - [ ] Writer 写新章时不读 recent_cast 中已有的旧角色（重复发明）
-- [ ] Coordinator session 中出现连续 ≥ 5 次空调 novel_context
+- [ ] Worker session 中出现连续 ≥ 5 次空调 novel_context
 - [ ] 任意章节 commit 后 `meta/checkpoints.jsonl` 没有对应 `commit_chapter` step
 
 前 4 条是本次新机制的健康度；后 3 条是已有机制的稳定性。

@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log/slog"
+	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -22,7 +24,7 @@ func NewSaveFoundationTool(store *store.Store) *SaveFoundationTool {
 
 func (t *SaveFoundationTool) Name() string { return "save_foundation" }
 func (t *SaveFoundationTool) Description() string {
-	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；顶层带 \"final\": true 即宣告收官卷——全书在该卷收束，所有章节写完后自动完结，无需再调 complete_book）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；调用前必须先通过终卷判定清单，且无返工队列）。scale 可选，仅允许 short / mid / long。"
+	return "保存小说基础设定（premise/outline/characters/world_rules/compass 等）。**这是唯一持久化入口**：未经此工具调用保存的内容不会进入 store，只在消息里输出 Markdown/JSON 等于丢失。参数固定为 {type, content, scale?, volume?, arc?}。type 可选 premise / outline / layered_outline / characters / world_rules / expand_arc / append_volume / update_compass / complete_book。premise 时 content 必须是 Markdown 字符串；其他类型 content 优先直接传 JSON 数组或对象。expand_arc 展开骨架弧的详细章节（需 volume + arc）；append_volume 追加新卷（content 为完整 VolumeOutline JSON，含弧结构；顶层带 \"final\": true 即宣告收官卷——全书在该卷收束，所有章节写完后自动完结，无需再调 complete_book）；update_compass 更新终局方向（content 为 StoryCompass JSON）；complete_book 宣告全书完结（content 传空对象 {}，直接推 Phase=Complete；工具会校验：大纲内章节已全部写完、无返工队列，否则拒绝——想提前收束用 append_volume 的 final 收官卷）。append_volume / complete_book 必须带 reason 参数（一句话判定理由，对照完结判定清单，记入裁定审计）。scale 可选，仅允许 short / mid / long。"
 }
 func (t *SaveFoundationTool) Label() string { return "保存设定" }
 
@@ -39,6 +41,7 @@ func (t *SaveFoundationTool) Schema() map[string]any {
 		schema.Property("scale", schema.Enum("规划级别", "short", "mid", "long")),
 		schema.Property("volume", schema.Int("目标卷序号（仅 expand_arc 时必传）")),
 		schema.Property("arc", schema.Int("目标弧序号（仅 expand_arc 时必传）")),
+		schema.Property("reason", schema.String("卷末判定理由（append_volume / complete_book 时必填）：对照完结判定清单，一句话说明为何续卷、宣告收官或完结")),
 	)
 }
 
@@ -49,6 +52,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		Scale   string          `json:"scale"`
 		Volume  int             `json:"volume"`
 		Arc     int             `json:"arc"`
+		Reason  string          `json:"reason"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return nil, fmt.Errorf("invalid args: %w: %w", errs.ErrToolArgs, err)
@@ -74,6 +78,23 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	if (a.Type == "outline" || a.Type == "layered_outline") && t.isWriting() {
 		return nil, fmt.Errorf(
 			"写作阶段禁止使用 %s 全量覆盖大纲。请使用 expand_arc 展开骨架弧，或 append_volume 追加新卷: %w", a.Type, errs.ErrToolPrecondition)
+	}
+
+	// 卷末三选一（续卷/收官/完结）是全书最重的语义判断，理由必须成为审计事实
+	// （decisions.jsonl，与 plan_start/intervention 同一条流水），否则收官过早/
+	// 续卷失当只能翻会话日志排障。事实快照取判定时刻（变更落盘前）的进度。
+	volumeEnd := a.Type == "append_volume" || a.Type == "complete_book"
+	if volumeEnd && strings.TrimSpace(a.Reason) == "" {
+		return nil, fmt.Errorf("%s 必须带 reason 参数：对照完结判定清单，一句话说明本次为何续卷、宣告收官或完结: %w", a.Type, errs.ErrToolArgs)
+	}
+	var volumeEndFacts json.RawMessage
+	if volumeEnd {
+		if p, _ := t.store.Progress.Load(); p != nil {
+			volumeEndFacts, _ = json.Marshal(map[string]any{
+				"completed_chapters": len(p.CompletedChapters),
+				"total_chapters":     p.TotalChapters,
+			})
+		}
 	}
 
 	decode := func(typeName string, out any) error {
@@ -165,6 +186,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		result["volume"] = a.Volume
 		result["arc"] = a.Arc
 		result["chapters"] = len(chapters)
+		t.consumeWriterFeedback()
 
 	case "append_volume":
 		if p, _ := t.store.Progress.Load(); p != nil && p.Phase == domain.PhaseComplete {
@@ -193,6 +215,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		if chCount > 0 {
 			result["chapters"] = chCount
 		}
+		t.consumeWriterFeedback()
 
 	case "complete_book":
 		// 全书完结的唯一入口：直接推 Phase=Complete。
@@ -210,6 +233,15 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		if len(progress.PendingRewrites) > 0 {
 			return nil, fmt.Errorf("还有 %d 章在返工队列中，处理完再调 complete_book: %w", len(progress.PendingRewrites), errs.ErrToolPrecondition)
+		}
+		// 可枚举的完本前置校验必须在代码层(三分法),不能只依赖提示词里的
+		// "完结判定清单"——真实事故:规划刚落盘 phase 翻到 writing,弱模型顺手
+		// 误调 complete_book,0/68 章被直接标记完本。
+		if len(progress.CompletedChapters) == 0 {
+			return nil, fmt.Errorf("一章未写不可完本;规划完成后写作由系统自动推进,无需调用 complete_book: %w", errs.ErrToolPrecondition)
+		}
+		if next := progress.NextChapter(); progress.TotalChapters > 0 && next <= progress.TotalChapters {
+			return nil, fmt.Errorf("大纲内还有未写章节（下一章 %d/共 %d），不可完本；想提前收束请改用 append_volume 且卷 JSON 顶层带 \"final\": true 宣告收官卷: %w", next, progress.TotalChapters, errs.ErrToolPrecondition)
 		}
 		if err := t.store.Progress.MarkComplete(); err != nil {
 			return nil, fmt.Errorf("mark complete: %w: %w", errs.ErrStoreWrite, err)
@@ -232,6 +264,7 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		}
 		result["ending_direction"] = compass.EndingDirection
 		result["last_updated"] = compass.LastUpdated
+		t.consumeWriterFeedback()
 
 	default:
 		return nil, fmt.Errorf("unknown type %q, expected premise/outline/layered_outline/characters/world_rules/expand_arc/append_volume/update_compass/complete_book: %w", a.Type, errs.ErrToolArgs)
@@ -248,8 +281,12 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		return nil, fmt.Errorf("checkpoint foundation %s: %w: %w", a.Type, errs.ErrStoreWrite, err)
 	}
 
+	if volumeEnd {
+		t.recordVolumeEndDecision(a.Type, a.Reason, volumeEndFacts, result)
+	}
+
 	// 返回剩余未完成项，引导 Architect 继续或结束；
-	// 齐全时一次性把 phase 推进到 writing，避免 Coordinator 再回来派单。
+	// 齐全时一次性把 phase 推进到 writing，下一 Engine 轮次可直接进入写作。
 	remaining := t.store.FoundationMissing()
 	ready := len(remaining) == 0
 	result["remaining"] = remaining
@@ -338,4 +375,35 @@ func normalizeFoundationContent(raw json.RawMessage) (string, error) {
 func (t *SaveFoundationTool) isWriting() bool {
 	p, _ := t.store.Progress.Load()
 	return p != nil && p.Phase == domain.PhaseWriting
+}
+
+// recordVolumeEndDecision 把卷末三选一（续卷/收官/完结）的判定理由落进裁定审计。
+// best-effort：结构变更已落盘，审计失败只告警不回滚——报错会让模型重试已完成
+// 的操作（重复追加卷）。
+func (t *SaveFoundationTool) recordVolumeEndDecision(action, reason string, facts json.RawMessage, result map[string]any) {
+	decision := map[string]any{"action": action}
+	if v, ok := result["volume"]; ok {
+		decision["volume"] = v
+	}
+	if _, ok := result["final_volume"]; ok {
+		decision["final"] = true
+	}
+	raw, _ := json.Marshal(decision)
+	if _, err := t.store.Decisions.Append(store.DecisionRecord{
+		Kind:     "volume_end",
+		Decider:  "architect",
+		Facts:    facts,
+		Decision: raw,
+		Reason:   reason,
+	}); err != nil {
+		slog.Warn("卷末裁定审计落盘失败", "module", "tools", "action", action, "err", err)
+	}
+}
+
+// consumeWriterFeedback 结构操作(expand_arc/append_volume/update_compass)成功
+// 即视为反馈池已被参考,清空防止陈旧反馈反复影响后续规划。best-effort。
+func (t *SaveFoundationTool) consumeWriterFeedback() {
+	if err := t.store.Outline.ClearOutlineFeedback(); err != nil {
+		slog.Warn("清空 writer 反馈池失败", "module", "tools", "err", err)
+	}
 }

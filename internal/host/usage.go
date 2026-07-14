@@ -37,7 +37,7 @@ const (
 //   - 注册表无此模型时，退回 msg.Usage.Cost.Total（provider 自带，可能为 0）
 //   - 模型热切换（/model）后续消息自动按新模型算价，旧消息保留旧成本
 //
-// 同时维护 per-role 维度（writer/editor/architect/coordinator）：
+// 同时维护 per-role 维度（writer/editor/architect）：
 //   - 累计命中数据 → 整体优化效果
 //   - 滑动窗最近 N 次 → 区分前期拖累 vs 稳态低命中
 //   - CacheCapable 标记 → 区分"未启用"和"真的 0% 命中"

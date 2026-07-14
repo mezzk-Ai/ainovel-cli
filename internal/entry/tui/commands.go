@@ -5,6 +5,7 @@ import (
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
 
@@ -97,6 +98,50 @@ func commandRegistryInstance() commandRegistry {
 				m.report = newReportState(m.width, m.height, m.reportSeq, time.Now())
 				m.textarea.Blur()
 				return m, loadReport(m.runtime.Dir(), m.reportSeq)
+			},
+		},
+		{
+			Name:        "review",
+			Group:       "writing",
+			Usage:       "/review on|off",
+			Description: "切换逐章验收模式",
+			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
+				if len(args) != 1 || (args[0] != "on" && args[0] != "off") {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "用法：/review on|off", Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				mode := domain.ChapterAdvanceReview
+				if args[0] == "off" {
+					mode = domain.ChapterAdvanceAuto
+				}
+				if err := m.runtime.SetAdvanceMode(mode); err != nil {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "切换推进模式失败：" + err.Error(), Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				return m, fetchSnapshot(m.runtime)
+			},
+		},
+		{
+			Name:        "next",
+			Group:       "writing",
+			Usage:       "/next",
+			Description: "验收后放行一个新章节",
+			AutoExecute: true,
+			NeedsIdle:   true,
+			Run: func(m Model, args []string) (tea.Model, tea.Cmd) {
+				if len(args) != 0 {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "用法：/next", Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				if err := m.runtime.AdvanceOneChapter(); err != nil {
+					m.applyEvent(host.Event{Time: time.Now(), Category: "ERROR", Summary: "放行下一章失败：" + err.Error(), Level: "error"})
+					m.refreshEventViewport()
+					return m, nil
+				}
+				return m, tea.Batch(fetchSnapshot(m.runtime), listenDone(m.runtime), m.textarea.Focus())
 			},
 		},
 		{

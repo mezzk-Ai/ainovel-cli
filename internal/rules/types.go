@@ -33,16 +33,11 @@ func (k SourceKind) String() string {
 	}
 }
 
-// WordRange 表示章节字数的允许范围；nil 表示未声明。
-type WordRange struct {
-	Min int `json:"min"`
-	Max int `json:"max"`
-}
-
 // Structured 装载机械可检的结构化规则字段（归一化各来源后的候选/合并结果）。
+// 章节字数刻意不在此列：多长算一章是叙事完整性问题，属语义裁量（writer/editor），
+// 数字化成机械硬线会诱导模型为跨线注水——字数意愿走 preferences 自然语言通道。
 type Structured struct {
 	Genre            string         `json:"genre,omitempty"`
-	ChapterWords     *WordRange     `json:"chapter_words,omitempty"`
 	ForbiddenChars   []string       `json:"forbidden_chars,omitempty"`
 	ForbiddenPhrases []string       `json:"forbidden_phrases,omitempty"`
 	FatigueWords     map[string]int `json:"fatigue_words,omitempty"`
@@ -51,7 +46,6 @@ type Structured struct {
 // IsEmpty 用于判定是否完全没有结构化规则；checker 可据此跳过。
 func (s Structured) IsEmpty() bool {
 	return s.Genre == "" &&
-		s.ChapterWords == nil &&
 		len(s.ForbiddenChars) == 0 &&
 		len(s.ForbiddenPhrases) == 0 &&
 		len(s.FatigueWords) == 0
@@ -63,8 +57,6 @@ func (s Structured) IsEmpty() bool {
 //	forbidden_chars 出现             -> Error
 //	forbidden_phrases 出现           -> Error
 //	fatigue_words 超阈值             -> Warning
-//	chapter_words 偏差 < 20%         -> Warning
-//	chapter_words 偏差 >= 20%        -> Error
 type Severity string
 
 const (
@@ -72,19 +64,15 @@ const (
 	SeverityError   Severity = "error"
 )
 
-// ChapterWordsDeviationThreshold 定义 chapter_words 偏差升级为 error 的临界值（20%）。
-const ChapterWordsDeviationThreshold = 0.20
-
 // Violation 是 checker 的输出：本章违反了某条机械规则的事实陈述。
 //
 // 注意：commit_chapter 把 violations 透传到返回 JSON，不阻断 commit；
 // editor 在审阅时把这些事实映射到现有七维（aesthetic/pacing/character/consistency），
 // 由 LLM 自主决定是否升级 verdict 触发 polish/rewrite。
 type Violation struct {
-	Rule      string   `json:"rule"`                // forbidden_chars / forbidden_phrases / fatigue_words / chapter_words
-	Target    string   `json:"target,omitempty"`    // 具体违规对象（哪个词/字符）；chapter_words 留空
-	Limit     any      `json:"limit,omitempty"`     // 阈值；fatigue_words=int / chapter_words="3000-6000" / forbidden_*=空
-	Actual    any      `json:"actual"`              // 实际值；fatigue_words/forbidden_*=出现次数 / chapter_words=本章字数
-	Deviation float64  `json:"deviation,omitempty"` // chapter_words 偏差率（0~1），其他规则留空
-	Severity  Severity `json:"severity"`            // error / warning
+	Rule     string   `json:"rule"`             // forbidden_chars / forbidden_phrases / fatigue_words
+	Target   string   `json:"target,omitempty"` // 具体违规对象（哪个词/字符）
+	Limit    any      `json:"limit,omitempty"`  // 阈值；fatigue_words=int / forbidden_*=空
+	Actual   any      `json:"actual"`           // 实际值：出现次数
+	Severity Severity `json:"severity"`         // error / warning
 }

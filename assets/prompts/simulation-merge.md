@@ -44,7 +44,6 @@
     "anti_patterns": ["会削弱吸引力的反模式"]
   },
   "role_guidance": {
-    "coordinator": ["Coordinator 如何用画像安排下一步"],
     "architect": ["Architect 如何用画像设计大纲和情节"],
     "writer": ["Writer 如何借鉴手法但不复制原文"],
     "editor": ["Editor 如何检查仿写方向和侵权风险"]

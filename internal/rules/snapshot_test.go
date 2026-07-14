@@ -6,13 +6,13 @@ import (
 )
 
 func TestBuildSnapshot_FieldOverridePrecedence(t *testing.T) {
-	// 低→高：defaults 设 3000-6000，project 覆盖为 1200-1600；高优先级胜出。
+	// 低→高：defaults 设 修仙，project 覆盖为 都市；高优先级胜出。
 	snap := BuildSnapshot([]Candidate{
-		{Source: "system_defaults", Structured: Structured{ChapterWords: &WordRange{Min: 3000, Max: 6000}}},
-		{Source: "project:a.md", Structured: Structured{ChapterWords: &WordRange{Min: 1200, Max: 1600}}},
+		{Source: "system_defaults", Structured: Structured{Genre: "修仙"}},
+		{Source: "project:a.md", Structured: Structured{Genre: "都市"}},
 	})
-	if snap.Structured.ChapterWords == nil || snap.Structured.ChapterWords.Min != 1200 || snap.Structured.ChapterWords.Max != 1600 {
-		t.Fatalf("期望 project 覆盖 defaults，得到 %+v", snap.Structured.ChapterWords)
+	if snap.Structured.Genre != "都市" {
+		t.Fatalf("期望 project 覆盖 defaults，得到 %q", snap.Structured.Genre)
 	}
 	if snap.Status != StatusReady {
 		t.Fatalf("期望 ready，得到 %s", snap.Status)
@@ -23,45 +23,21 @@ func TestBuildSnapshot_FieldOverridePrecedence(t *testing.T) {
 }
 
 func TestBuildSnapshot_EmptyAndZeroAreAbsent(t *testing.T) {
-	// 归一化器吐占位：genre:""、chapter_words{0,0}、空串元素——都必须当缺失，不覆盖低优先级真值。
+	// 归一化器吐占位：genre:""、空串元素——都必须当缺失，不覆盖低优先级真值。
 	snap := BuildSnapshot([]Candidate{
 		{Source: "system_defaults", Structured: Structured{
-			Genre:        "修仙",
-			ChapterWords: &WordRange{Min: 3000, Max: 6000},
+			Genre: "修仙",
 		}},
 		{Source: "startup_prompt", Structured: Structured{
-			Genre:            "",                       // 占位空串 → 不覆盖
-			ChapterWords:     &WordRange{Min: 0, Max: 0}, // 零值 → 不覆盖
-			ForbiddenPhrases: []string{"", "  "},        // 全空 → 丢弃
+			Genre:            "",                 // 占位空串 → 不覆盖
+			ForbiddenPhrases: []string{"", "  "}, // 全空 → 丢弃
 		}},
 	})
 	if snap.Structured.Genre != "修仙" {
 		t.Fatalf("空 genre 不应覆盖，期望 修仙，得到 %q", snap.Structured.Genre)
 	}
-	if snap.Structured.ChapterWords == nil || snap.Structured.ChapterWords.Min != 3000 {
-		t.Fatalf("零值 chapter_words 不应覆盖，得到 %+v", snap.Structured.ChapterWords)
-	}
 	if len(snap.Structured.ForbiddenPhrases) != 0 {
 		t.Fatalf("全空 forbidden_phrases 应被丢弃，得到 %v", snap.Structured.ForbiddenPhrases)
-	}
-}
-
-func TestBuildSnapshot_UpperBoundOnly(t *testing.T) {
-	// "每章别超过2500字" → {min:0, max:2500}，min:0 合法表示无下限。
-	snap := BuildSnapshot([]Candidate{
-		{Source: "startup_prompt", Structured: Structured{ChapterWords: &WordRange{Min: 0, Max: 2500}}},
-	})
-	if snap.Structured.ChapterWords == nil || snap.Structured.ChapterWords.Max != 2500 {
-		t.Fatalf("上限-only 应保留，得到 %+v", snap.Structured.ChapterWords)
-	}
-}
-
-func TestBuildSnapshot_InvalidRangeDropped(t *testing.T) {
-	snap := BuildSnapshot([]Candidate{
-		{Source: "x", Structured: Structured{ChapterWords: &WordRange{Min: 5000, Max: 1000}}},
-	})
-	if snap.Structured.ChapterWords != nil {
-		t.Fatalf("min>max 非法区间应丢弃，得到 %+v", snap.Structured.ChapterWords)
 	}
 }
 
@@ -95,14 +71,14 @@ func TestBuildSnapshot_FatigueWordsMergeByWord(t *testing.T) {
 
 func TestBuildSnapshot_DegradedPropagates(t *testing.T) {
 	snap := BuildSnapshot([]Candidate{
-		{Source: "system_defaults", Structured: Structured{ChapterWords: &WordRange{Min: 3000, Max: 6000}}},
+		{Source: "system_defaults", Structured: Structured{FatigueWords: map[string]int{"竟然": 1}}},
 		{Source: "project:bad.md", Preferences: "原文降级", Degraded: true},
 	})
 	if snap.Status != StatusDegraded {
 		t.Fatalf("任一来源降级则 status=degraded，得到 %s", snap.Status)
 	}
 	// 降级来源仍以 raw preferences 进入，不阻断；其它来源 structured 照常。
-	if snap.Structured.ChapterWords == nil {
+	if len(snap.Structured.FatigueWords) == 0 {
 		t.Fatalf("降级不应影响其它来源的 structured")
 	}
 	if !strings.Contains(snap.Preferences, "原文降级") {
@@ -112,9 +88,6 @@ func TestBuildSnapshot_DegradedPropagates(t *testing.T) {
 
 func TestSystemDefaults_MatchesLegacyDefaultMD(t *testing.T) {
 	d := SystemDefaults().Structured
-	if d.ChapterWords == nil || d.ChapterWords.Min != 3000 || d.ChapterWords.Max != 6000 {
-		t.Fatalf("默认字数应为 3000-6000，得到 %+v", d.ChapterWords)
-	}
 	if len(d.ForbiddenPhrases) != 4 {
 		t.Fatalf("默认禁语应为 4 条，得到 %d", len(d.ForbiddenPhrases))
 	}

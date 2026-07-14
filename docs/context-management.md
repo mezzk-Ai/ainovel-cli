@@ -85,7 +85,7 @@
 
 作用：
 
-- 组装 Writer / Coordinator 的 `ContextManager`
+- 组装 Writer 的 `ContextManager`（Coordinator 已于 2026-07-12 退役，见 docs/engine-arbiter.md）
 - 给 Writer 注入额外的 `StoreSummaryCompact`
 - 给 Writer 配置小说定制的 `FullSummary` prompt
 - 给 Writer 配置 `writerRestorePack`
@@ -138,7 +138,7 @@
 
 ## 4. ContextManager 是怎么组装的
 
-Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
+Writer 走 `newContextManager`（每次 spawn 由工厂按当前模型窗口重建）。Coordinator 退役前走同一工厂，其配置在下表保留作历史对照。
 
 当前 `contextManagerConfig` 的关键参数：
 
@@ -162,7 +162,7 @@ Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
 
 当前实际配置值：
 
-| 参数 | Writer | Coordinator |
+| 参数 | Writer | Coordinator（已退役，历史对照） |
 |------|--------|-------------|
 | ReserveTokens | 16,384 | 32,000 |
 | KeepRecentTokens | 20,000 | 30,000 |
@@ -171,7 +171,7 @@ Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
 | ExtraStrategies | StoreSummaryCompact | 无 |
 | 自定义 Summary Prompt | 小说叙事版 | 默认(代码助手版) |
 
-压缩触发阈值 = `ContextWindow - ReserveTokens`。例如窗口 128K 时，Writer 在 ~112K 触发，Coordinator 在 ~96K 触发。
+压缩触发阈值 = `ContextWindow - ReserveTokens`。例如窗口 128K 时，Writer 在 ~112K 触发。
 
 当前 Writer 的策略管线顺序是：
 
@@ -285,7 +285,7 @@ Writer 和 Coordinator 都走 `newContextManager`，但配置不同。
 为什么只给 Writer 用：
 
 - 这是小说业务策略，不是通用框架策略
-- Coordinator / Editor 的上下文模式不同
+- Editor / Architect 的上下文模式不同（单次任务，窗口压力小）
 - 先在最需要连续创作记忆的 Writer 上验证最合理
 
 ### 5.4 FullSummary

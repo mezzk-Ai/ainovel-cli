@@ -26,6 +26,15 @@ func renderStateContent(snap host.UISnapshot, contentW int) string {
 	overview.WriteString(renderField("运行态", snapshotRuntimeStateLabel(snap.RuntimeState)))
 	overview.WriteString(renderField("阶段", snapshotPhaseLabel(snap.Phase)))
 	overview.WriteString(renderField("流程", snapshotFlowLabel(snap.Flow)))
+	if snap.AdvanceMode == "review" {
+		advance := "逐章验收"
+		if snap.AdvancePermitChapter > 0 {
+			advance = fmt.Sprintf("已放行第 %d 章", snap.AdvancePermitChapter)
+		}
+		overview.WriteString(renderField("推进", advance))
+	} else if snap.AdvanceMode == "auto" {
+		overview.WriteString(renderField("推进", "自动"))
+	}
 	if snap.Layered {
 		overview.WriteString(renderField("已完成", fmt.Sprintf("%d 章", snap.CompletedCount)))
 		// 分层动态规划：右栏只展示当前弧已展开的章节，"已规划"也用同一个口径，
@@ -80,6 +89,10 @@ func renderStateContent(snap host.UISnapshot, contentW int) string {
 	if snap.PendingSteer != "" {
 		sections = append(sections, renderSidebarSection("干预",
 			renderHighlightField("待处理", truncate(snap.PendingSteer, contentW-10)), contentW))
+	}
+	if snap.HasAdvanceHold {
+		sections = append(sections, renderSidebarSection("验收停靠",
+			renderHighlightField("等待", truncate(snap.AdvanceHoldReason, contentW-10)), contentW))
 	}
 
 	if body := renderUsageSidebar(snap, contentW); body != "" {
@@ -223,6 +236,9 @@ func snapshotHeadline(snap host.UISnapshot) string {
 		}
 		return "等待返工处理"
 	}
+	if snap.AdvanceMode == "review" && !snap.IsRunning && snap.Phase == "writing" {
+		return "逐章验收：等待放行下一章"
+	}
 	return ""
 }
 
@@ -350,7 +366,9 @@ func renderUsageLine(name string, color lipgloss.TerminalColor, input, output in
 	if costStr := formatCostUSD(cost); costStr != "" {
 		right += " · " + costStr
 	}
-	return fitInlineLine(nameCell+lipgloss.NewStyle().Foreground(colorDim).Render(right), width)
+	// 名称恰好占满固定列宽时，padding 不会留下尾随空格；显式分隔，避免
+	// "gpt-5.6-sol5.3k" 这类模型名与用量粘连。
+	return fitInlineLine(nameCell+" "+lipgloss.NewStyle().Foreground(colorDim).Render(right), width)
 }
 
 func modelDisplayName(model string) string {
@@ -434,11 +452,19 @@ func renderCacheSidebar(snap host.UISnapshot, width int) string {
 		b.WriteString(renderField("链路断裂", v))
 	}
 
-	if len(snap.CachePerAgent) > 0 {
+	// Arbiter 按设计不参与 prompt cache（KB 级一次性裁定，无稳定前缀可复用），
+	// 常驻"未启用"或"0%"只会引人排查；用量面板仍完整记它的账。
+	var roles []host.AgentCacheStat
+	for _, a := range snap.CachePerAgent {
+		if a.Role != "arbiter" {
+			roles = append(roles, a)
+		}
+	}
+	if len(roles) > 0 {
 		b.WriteString(lipgloss.NewStyle().Foreground(colorDim).
 			Render(strings.Repeat("·", max(8, width-12))))
 		b.WriteString("\n")
-		for _, a := range snap.CachePerAgent {
+		for _, a := range roles {
 			b.WriteString(renderCacheAgentLine(a, width))
 			b.WriteString("\n")
 		}
@@ -466,7 +492,7 @@ func colorPercent(p float64) string {
 //	已启用     "WRITER        85%  · 323k / 394k"
 //	无 cache  显式"未启用"，不混进 0/0 干扰判读
 func renderCacheAgentLine(a host.AgentCacheStat, width int) string {
-	// role 名与"运行角色"区保持完全一致；Width 取 12 让最长的 COORDINATOR
+	// role 名与"运行角色"区保持完全一致；Width 取 12 让最长的 ARCHITECT
 	// 仍能保留 1 列尾随空格做分隔，其它 role 自动右侧填充。
 	roleStyle := lipgloss.NewStyle().Foreground(eventAgentColor(a.Role)).Width(12)
 	role := roleStyle.Render(agentDisplayName(a.Role))
@@ -643,8 +669,6 @@ func agentOrder(name string) int {
 	switch {
 	case strings.HasPrefix(name, "architect"):
 		return 0
-	case name == "coordinator":
-		return 1
 	case name == "editor":
 		return 2
 	case name == "writer":
@@ -711,8 +735,6 @@ func taskKindLabel(kind string) string {
 		return "下一卷规划"
 	case "steer_apply":
 		return "处理干预"
-	case "coordinator_decision":
-		return "协调推进"
 	default:
 		return kind
 	}

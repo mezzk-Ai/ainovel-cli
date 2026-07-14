@@ -1,7 +1,7 @@
 // Package exp 实现已完成章节的导出能力。
 //
 // 与 imp/ 对称：纯本地 IO，不依赖 LLM，不改 store 状态。导出可以与
-// Coordinator 并发运行（只读 Progress + 章节终稿），属于横向能力。
+// Engine 并发运行（只读 Progress + 章节终稿），属于横向能力。
 //
 // 第一版只支持 TXT；EPUB 留待下一轮。
 package exp
