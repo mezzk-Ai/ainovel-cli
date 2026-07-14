@@ -44,6 +44,24 @@ func renderEventLine(ev host.Event, width, spinnerFrame int) string {
 	durStr := renderEventDuration(ev.Duration)
 
 	switch {
+	case ev.Category == "DECISION":
+		var icon string
+		switch {
+		case running:
+			icon = lipgloss.NewStyle().Foreground(colorContext).Bold(true).Render(runningSpinner(spinnerFrame))
+		case ev.Failed:
+			icon = lipgloss.NewStyle().Foreground(colorError).Bold(true).Render("✕")
+		default:
+			icon = lipgloss.NewStyle().Foreground(colorSuccess).Render("✓")
+		}
+		name := lipgloss.NewStyle().Foreground(colorContext).Bold(true).Render("ARBITER")
+		label := lipgloss.NewStyle().Foreground(colorMuted).Render("（" + truncate(ev.Summary, maxSumW-9) + "）")
+		line := tsStr + " " + icon + " " + name + label
+		if !running {
+			line += durStr
+		}
+		return line
+
 	case ev.Category == "DISPATCH":
 		// 三态：进行中（accent spinner + 加粗）/ 失败（红 ✕）/ 完成（绿 ✓）
 		var icon string

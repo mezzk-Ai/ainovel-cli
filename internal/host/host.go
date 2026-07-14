@@ -317,8 +317,10 @@ func (h *Host) StartPrepared(rawRequirement string) error {
 
 	// 启动裁定:失败显式报错中止(启动期用户在场,报错优于猜测)。
 	start := time.Now()
-	decision, derr := arbiter.DecidePlanStart(h.runCtx, h.arbiterModel(),
-		h.bundle.Prompts.ArbiterPlanStart, rawRequirement, h.cfg.Style)
+	decision, derr := runObservedDecision(h.observer, "启动裁定", func() (arbiter.PlanStartDecision, error) {
+		return arbiter.DecidePlanStart(h.runCtx, h.arbiterModel(),
+			h.bundle.Prompts.ArbiterPlanStart, rawRequirement, h.cfg.Style)
+	})
 	rec := storepkg.DecisionRecord{Kind: "plan_start", Decider: "arbiter", Input: rawRequirement,
 		Reason: decision.Reason, DurationMs: time.Since(start).Milliseconds()}
 	if derr == nil {
@@ -443,8 +445,10 @@ func (h *Host) doIntervention(text string, restart bool) {
 	facts.Running = h.engine.isRunning()
 
 	start := time.Now()
-	decision, derr := arbiter.DecideIntervention(h.runCtx, h.arbiterModel(),
-		h.bundle.Prompts.ArbiterIntervention, facts, text)
+	decision, derr := runObservedDecision(h.observer, "用户干预裁定", func() (arbiter.InterventionDecision, error) {
+		return arbiter.DecideIntervention(h.runCtx, h.arbiterModel(),
+			h.bundle.Prompts.ArbiterIntervention, facts, text)
+	})
 
 	rec := storepkg.DecisionRecord{Kind: "intervention", Decider: "arbiter", Input: text,
 		Reason: decision.Reason, DurationMs: time.Since(start).Milliseconds()}

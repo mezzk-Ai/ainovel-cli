@@ -71,6 +71,7 @@ var statusDisplay = map[string]struct {
 // 事件分类颜色映射
 var categoryColors = map[string]lipgloss.AdaptiveColor{
 	"DISPATCH": colorAccent,
+	"DECISION": colorContext,
 	"DONE":     colorSuccess,
 	"TOOL":     colorTool,
 	"SYSTEM":   colorAccent,

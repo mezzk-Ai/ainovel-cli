@@ -41,6 +41,13 @@ func TestBuildRightInfoShowsAutoThinkingWhenUnset(t *testing.T) {
 	}
 }
 
+func TestRenderUsageLineSeparatesFullWidthNameAndTokens(t *testing.T) {
+	out := renderUsageLine("gpt-5.6-sol", bodyTextColor, 5300, 0, 0.23, 32)
+	if !strings.Contains(out, "gpt-5.6-sol 5.3k") {
+		t.Fatalf("model name and tokens should have a visible gap: %q", out)
+	}
+}
+
 func TestTruncateByDisplayWidth(t *testing.T) {
 	// 纯中文按视觉宽度截：10 列预算 = 3 个汉字(6列) + "..."(3列)，按 rune 截会溢出到 17 列
 	got := truncate("临港市公共算法伦理审计员", 10)

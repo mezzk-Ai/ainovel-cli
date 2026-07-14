@@ -350,7 +350,9 @@ func renderUsageLine(name string, color lipgloss.TerminalColor, input, output in
 	if costStr := formatCostUSD(cost); costStr != "" {
 		right += " · " + costStr
 	}
-	return fitInlineLine(nameCell+lipgloss.NewStyle().Foreground(colorDim).Render(right), width)
+	// 名称恰好占满固定列宽时，padding 不会留下尾随空格；显式分隔，避免
+	// "gpt-5.6-sol5.3k" 这类模型名与用量粘连。
+	return fitInlineLine(nameCell+" "+lipgloss.NewStyle().Foreground(colorDim).Render(right), width)
 }
 
 func modelDisplayName(model string) string {

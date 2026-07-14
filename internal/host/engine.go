@@ -256,7 +256,9 @@ func (e *engine) planStartFallback(ctx context.Context) *flow.Instruction {
 // retryPlanStart 补裁启动决策并固化(裁定先落事实再执行,与 StartPrepared 同构)。
 func (e *engine) retryPlanStart(ctx context.Context, prompt string) *flow.Instruction {
 	start := time.Now()
-	decision, derr := arbiter.DecidePlanStart(ctx, e.arbiterModel, e.planStartPrompt, prompt, e.style)
+	decision, derr := runObservedDecision(e.observer, "启动补裁", func() (arbiter.PlanStartDecision, error) {
+		return arbiter.DecidePlanStart(ctx, e.arbiterModel, e.planStartPrompt, prompt, e.style)
+	})
 	rec := storepkg.DecisionRecord{Kind: "plan_start", Decider: "arbiter", Input: prompt,
 		Reason: decision.Reason, DurationMs: time.Since(start).Milliseconds()}
 	if derr == nil {
@@ -349,7 +351,9 @@ func (e *engine) trackDeadlock(ctx context.Context, inst **flow.Instruction) (st
 	}
 	// Arbiter 僵局咨询(repeats ∈ [consultAt, abortAt))。裁定 retry 不清零计数。
 	facts := e.failureFacts("deadlock", in, "")
-	decision, err := arbiter.DecideFailure(ctx, e.arbiterModel, e.failurePrompt, facts)
+	decision, err := runObservedDecision(e.observer, "僵局裁定", func() (arbiter.FailureDecision, error) {
+		return arbiter.DecideFailure(ctx, e.arbiterModel, e.failurePrompt, facts)
+	})
 	e.recordFailureDecision("deadlock", in, facts, decision, err)
 	if err != nil {
 		e.pauseWithNotify("deadlock", "僵局裁定失败,已暂停等待人工介入: "+err.Error())
@@ -417,7 +421,9 @@ func (e *engine) handleWorkerError(ctx context.Context, inst *flow.Instruction, 
 	}
 	e.failedKey = ""
 	facts := e.failureFacts("worker_failure", inst, msg)
-	decision, err := arbiter.DecideFailure(ctx, e.arbiterModel, e.failurePrompt, facts)
+	decision, err := runObservedDecision(e.observer, "失败裁定", func() (arbiter.FailureDecision, error) {
+		return arbiter.DecideFailure(ctx, e.arbiterModel, e.failurePrompt, facts)
+	})
 	e.recordFailureDecision("worker_failure", inst, facts, decision, err)
 	if err != nil {
 		e.pauseWithNotify("worker_failure", "失败裁定不可用,已暂停等待人工介入: "+msg)

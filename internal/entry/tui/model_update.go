@@ -565,9 +565,9 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case toolSpinnerTickMsg:
 		m.toolSpinnerIdx = (m.toolSpinnerIdx + 1) % len(toolSpinnerFrames)
 		// 事件流"进行中"行的 spinner 刷新（150ms，独立节奏）。
-		// spinner 帧只影响 running 事件行，已完成行的渲染输出 byte-for-byte 相同；
-		// 没有 running 事件时整个重渲是无意义的，跳过。
-		if m.snapshot.IsRunning && m.hasRunningEvent() {
+		// Arbiter 可在 Engine 停机态处理 Continue/查询，因此不能用 snapshot.IsRunning
+		// 作为动画前提；只要存在调用类 running 事件就刷新。没有时跳过全量重渲。
+		if m.hasRunningEvent() {
 			m.refreshEventViewport()
 		}
 		return m, tickToolSpinner(), true
