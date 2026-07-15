@@ -486,10 +486,10 @@ func (h *Host) doIntervention(text string, restart bool) {
 	}
 
 	if derr != nil {
-		// 宁可不动,不可误动:不产生任何写入,回显请用户换个说法。
-		// 已当面告知 → 清除 pending(留着会在下次 Resume 重放一条已知无法理解的指令)。
-		h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
-			Summary: "未能理解这条干预,请换个说法(未做任何修改)"})
+		// 宁可不动,不可误动:不产生任何写入。调用错误与
+		// 输出校验错误共用同一 error 通道,必须原样回显,不得统一伪装成"未能理解"。
+		// 已当面告知 → 清除 pending(否则下次 Resume 会自动重放同一条失败干预)。
+		h.emitEvent(newInterventionFailureEvent(derr))
 		clearPending()
 		return
 	}
@@ -545,6 +545,19 @@ func (h *Host) doIntervention(text string, restart bool) {
 			h.emitEvent(Event{Time: time.Now(), Category: "SYSTEM", Level: "warn",
 				Summary: "Engine 正在完成上一轮停止；干预已保存，请稍后继续"})
 		}
+	}
+}
+
+func newInterventionFailureEvent(err error) Event {
+	detail := err.Error()
+	return Event{
+		Time:     time.Now(),
+		Category: "ERROR",
+		Agent:    "arbiter",
+		Summary:  "干预裁定失败：" + detail + "（未做任何修改）",
+		Detail:   detail,
+		Kind:     errorKind(err, detail),
+		Level:    "error",
 	}
 }
 

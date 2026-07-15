@@ -101,7 +101,7 @@ func DecideIntervention(ctx, model, facts, text) (InterventionDecision, error) /
 // 其余场景同形一对;Collect/Decide 形状统一,不建通用 Question/Decision 框架
 ```
 
-- **降级路径**:JSON 解析失败带错误重问一次;再失败——干预回显"未能理解"不产生写入,启动显式报错,failure/deadlock 按确定性兜底(终止并告警)
+- **失败路径**:JSON 解析或校验失败带错误重问(最多 3 次);仍失败或模型调用失败——干预显式回显真实错误且不产生写入,启动显式报错,failure/deadlock 按确定性兜底(终止并告警)
 - **干预记忆**:decisions.jsonl 兼任干预历史,`CollectInterventionFacts` 纳入最近 N 条裁定摘要
 - **模型**:Arbiter 统一使用 Default，不暴露独立 role；只在出现明确的能力或成本需求时再扩展配置契约
 

@@ -29,7 +29,7 @@ import (
 const decideMaxTokens = 8192
 
 // decideMaxAttempts 总尝试次数:解析失败带反馈重问,最多 3 次后返回错误,
-// 由调用方按场景降级(干预回显"未能理解"、启动显式报错)。
+// 由调用方回显真实失败原因并保证不执行未裁定的动作。
 const decideMaxAttempts = 3
 
 // modelMaxRetries 与 Worker 的 subagentMaxRetries 保持一致。这里只处理请求层的

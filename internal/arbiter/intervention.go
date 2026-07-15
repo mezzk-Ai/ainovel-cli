@@ -154,8 +154,8 @@ func (d *InterventionDecision) ValidateAgainst(f InterventionFacts) error {
 	return nil
 }
 
-// DecideIntervention 干预分诊。失败语义:返回 error → 调用方回显"未能理解"
-// 且不产生任何写入(宁可不动,不可误动)。
+// DecideIntervention 干预分诊。失败语义:返回 error → 调用方显式回显
+// 真实失败原因,且不产生任何写入(宁可不动,不可误动)。
 func DecideIntervention(ctx context.Context, model agentcore.ChatModel, systemPrompt string, facts InterventionFacts, text string) (InterventionDecision, error) {
 	payload := marshalPayload(struct {
 		Intervention string            `json:"intervention"`

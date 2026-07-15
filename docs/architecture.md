@@ -313,7 +313,7 @@ for {
 | `worker_failure` | Worker 报错且确定性分类无出路 | retry / reroute / abort |
 | `deadlock` | 同指令反复无进展 | retry / reroute / abort |
 
-降级路径：解析失败带反馈重问（最多 3 次）→ 干预回显"未能理解"不产生写入，启动显式报错，failure/deadlock 保守暂停。**Arbiter 输出与一切 LLM 输出同样不可信**——`Validate` 按事实做机械校验（phase 约束、reopen 仅限完本、章节越界）是最后一道门。用量经 `usageTrackedModel` 进预算与 usage 系统。
+失败路径：解析或校验失败带反馈重问（最多 3 次）→ 仍失败或模型调用失败时，干预显式回显真实错误且不产生写入，启动显式报错，failure/deadlock 保守暂停。**Arbiter 输出与一切 LLM 输出同样不可信**——`Validate` 按事实做机械校验（phase 约束、reopen 仅限完本、章节越界）是最后一道门。用量经 `usageTrackedModel` 进预算与 usage 系统。
 
 ### 7.3 Host 外壳（`internal/host/host.go`）
 
