@@ -1,11 +1,15 @@
 package tui
 
 import (
+	"context"
 	"slices"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 	"github.com/voocel/ainovel-cli/internal/bootstrap"
 	"github.com/voocel/ainovel-cli/internal/host"
 )
@@ -16,6 +20,15 @@ func hubFieldIDs(fields []hubField) []string {
 		ids[i] = f.id
 	}
 	return ids
+}
+
+func hubFieldIndex(fields []hubField, id string) int {
+	for i, field := range fields {
+		if field.id == id {
+			return i
+		}
+	}
+	return -1
 }
 
 // 选中已有 Provider 应进入详情 hub（先看信息，再逐一调整），而不是直接跳进“改协议”。
@@ -53,14 +66,15 @@ func TestCustomProviderHubShowsProtocolAndEndpoint(t *testing.T) {
 	}
 }
 
-// Esc 逐级返回：字段编辑器 → hub → Provider 列表 → 关闭。
+// Esc 逐级返回：hub 行内编辑 → hub → Provider 列表 → 关闭。
 func TestEscapeBackHierarchy(t *testing.T) {
-	st := &modelConfigState{}
-	st.step = configStepBaseURL
-	if got, ok := st.escapeBack(); !ok || got != configStepHub {
-		t.Fatalf("字段编辑器 Esc 应回 hub，得到 %d,%v", got, ok)
+	st := &modelConfigState{step: configStepHub, provider: "proxy"}
+	st.beginInlineEdit("baseurl")
+	m := Model{modelConfig: st}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if st.step != configStepHub || st.editingField != "" {
+		t.Fatalf("行内编辑 Esc 应留在 hub 并取消输入，得到 step=%d field=%q", st.step, st.editingField)
 	}
-	st.step = configStepHub
 	if got, ok := st.escapeBack(); !ok || got != configStepProvider {
 		t.Fatalf("hub Esc 应回列表，得到 %d,%v", got, ok)
 	}
@@ -70,53 +84,120 @@ func TestEscapeBackHierarchy(t *testing.T) {
 	}
 }
 
-// 模型列表末项恒为“新增模型”入口，Enter 进入命名（不再靠隐藏的 A 快捷键）。
-func TestModelListAddEntryOpensNameInput(t *testing.T) {
+func TestModelListAddsAndEditsInPlace(t *testing.T) {
 	st := &modelConfigState{step: configStepModels, editModelIdx: -1,
-		models: []bootstrap.ModelConfig{{Name: "m1"}}}
-	st.cursor = len(st.models) // 停在“+ 新增模型…”
+		models: []bootstrap.ModelConfig{{Name: "m1"}}, modelOrigins: []string{"m1"}}
+	st.cursor = len(st.models)
 	m := Model{modelConfig: st}
 	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if st.step != configStepModelName || st.editModelIdx != -1 {
-		t.Fatalf("选中新增入口应进入命名(step=%d, idx=%d)", st.step, st.editModelIdx)
+	if st.step != configStepModels || st.editingField != configModelNameField || !st.addingModel {
+		t.Fatalf("新增应留在列表行内编辑，step=%d field=%q adding=%v", st.step, st.editingField, st.addingModel)
+	}
+	st.input.SetValue("  m2  ")
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if st.editingField != configModelWindowField || st.models[1].Name != "m2" {
+		t.Fatalf("名称提交后应在同一行进入窗口列，field=%q models=%#v", st.editingField, st.models)
+	}
+	st.input.SetValue("128K")
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if st.editingField != "" || st.addingModel || st.models[1].ContextWindow != 128000 {
+		t.Fatalf("新增模型未在同一页完成: %#v", st)
 	}
 }
 
-// 选中已有模型 Enter → 进入该模型详情（设默认/改窗口/删除），而不是隐藏的 E/D。
-func TestSelectingModelOpensDetail(t *testing.T) {
+func TestModelListEditsSelectedCellAndCancels(t *testing.T) {
 	st := &modelConfigState{step: configStepModels, editModelIdx: -1,
-		models: []bootstrap.ModelConfig{{Name: "m1"}, {Name: "m2"}}}
-	st.cursor = 1
+		models: []bootstrap.ModelConfig{{Name: "m1", ContextWindow: 1000}}, modelOrigins: []string{"m1"}}
+	m := Model{modelConfig: st}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyRight})
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if st.editingField != configModelWindowField || st.step != configStepModels {
+		t.Fatalf("右列 Enter 应行内编辑窗口，step=%d field=%q", st.step, st.editingField)
+	}
+	st.input.SetValue("200K")
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if st.editingField != "" || st.models[0].ContextWindow != 1000 {
+		t.Fatalf("Esc 应取消当前单元格且不改值: %#v", st.models[0])
+	}
+}
+
+func TestModelRenameProducesExplicitDraftAndReferenceNotice(t *testing.T) {
+	st := &modelConfigState{
+		step: configStepModels, provider: "proxy", models: []bootstrap.ModelConfig{{Name: "old"}},
+		modelOrigins: []string{"old"}, snapshot: host.ModelConfigurationSnapshot{
+			References: map[string][]string{"proxy\x00old": {"default", "writer fallback[0]"}},
+		},
+	}
 	m := Model{modelConfig: st}
 	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
-	if st.step != configStepModelDetail || st.editModelIdx != 1 {
-		t.Fatalf("选中模型应进入详情(step=%d, idx=%d)", st.step, st.editModelIdx)
+	st.input.SetValue("renamed")
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	draft := st.draft()
+	if len(draft.Renames) != 1 || draft.Renames[0] != (host.ModelRename{From: "old", To: "renamed"}) {
+		t.Fatalf("模型改名必须保留显式身份关系，renames=%#v", draft.Renames)
 	}
-	ids := hubFieldIDs(st.modelDetailFields())
-	// 详情只留 上下文窗口 / 删除；“设默认”已移除（切换归 /model）。
-	if slices.Contains(ids, "default") {
-		t.Fatalf("模型详情不应再有“设为默认”，得到 %v", ids)
+	if !strings.Contains(st.message, "同步更新引用") || !strings.Contains(st.message, "default") {
+		t.Fatalf("引用模型改名应明确提示保存行为，message=%q", st.message)
 	}
-	for _, want := range []string{"window", "delete"} {
-		if !slices.Contains(ids, want) {
-			t.Fatalf("模型详情缺少 %q，得到 %v", want, ids)
+}
+
+func TestModelListRendersEditableColumnsAndReferences(t *testing.T) {
+	st := &modelConfigState{
+		step: configStepModels, provider: "proxy", models: []bootstrap.ModelConfig{{Name: "deepseek-chat", ContextWindow: 128000}},
+		modelOrigins: []string{"deepseek-chat"}, snapshot: host.ModelConfigurationSnapshot{
+			References: map[string][]string{"proxy\x00deepseek-chat": {"default"}},
+		},
+	}
+	plain := ansi.Strip(renderModelConfigModal(120, st))
+	for _, want := range []string{"模型 ID", "上下文窗口", "引用", "deepseek-chat", "128K", "default", "+ 新增模型"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("单页模型表缺少 %q:\n%s", want, plain)
 		}
 	}
 }
 
-// 改已有模型窗口后退回其详情、Esc 也逐级回详情→列表（新增流程则退回命名）。
-func TestModelWindowEscapeHierarchy(t *testing.T) {
-	editing := &modelConfigState{step: configStepModelWindow, editModelIdx: 0}
-	if got, ok := editing.escapeBack(); !ok || got != configStepModelDetail {
-		t.Fatalf("改已有模型窗口 Esc 应回详情，得到 %d,%v", got, ok)
+func TestModelNameInlineEditorKeepsModalRowsIntact(t *testing.T) {
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(oldProfile) })
+	st := &modelConfigState{
+		step: configStepModels, provider: "deepseek",
+		models:       []bootstrap.ModelConfig{{Name: "deepseek-v4-pro"}, {Name: "deepseek-v4-flash"}},
+		modelOrigins: []string{"deepseek-v4-pro", "deepseek-v4-flash"},
 	}
-	adding := &modelConfigState{step: configStepModelWindow, editModelIdx: -1}
-	if got, ok := adding.escapeBack(); !ok || got != configStepModelName {
-		t.Fatalf("新增流程窗口 Esc 应回命名，得到 %d,%v", got, ok)
+	st.beginModelEdit(0, 0)
+	view := renderModelConfigModal(120, st)
+	lines := strings.Split(view, "\n")
+	for i, line := range lines {
+		if width := lipgloss.Width(line); width != 72 {
+			t.Fatalf("行内模型名编辑破坏了第 %d 行宽度: width=%d line=%q\n%s", i, width, ansi.Strip(line), ansi.Strip(view))
+		}
 	}
-	detail := &modelConfigState{step: configStepModelDetail}
-	if got, ok := detail.escapeBack(); !ok || got != configStepModels {
-		t.Fatalf("模型详情 Esc 应回列表，得到 %d,%v", got, ok)
+	if len(lines) != 7 {
+		t.Fatalf("行内编辑不应引入物理换行，得到 %d 行:\n%s", len(lines), ansi.Strip(view))
+	}
+}
+
+func TestRenamedReferencedModelStillCannotBeDeleted(t *testing.T) {
+	st := &modelConfigState{
+		provider: "proxy", currentModel: "old", models: []bootstrap.ModelConfig{{Name: "renamed"}},
+		modelOrigins: []string{"old"}, snapshot: host.ModelConfigurationSnapshot{
+			References: map[string][]string{"proxy\x00old": {"default"}},
+		},
+	}
+	if st.deleteModel(0) || len(st.models) != 1 || !strings.Contains(st.message, "正在使用") {
+		t.Fatalf("重命名尚未保存时仍应按原身份保护删除，models=%#v message=%q", st.models, st.message)
+	}
+}
+
+func TestCancellingNewModelNameRemovesTemporaryRow(t *testing.T) {
+	st := &modelConfigState{step: configStepModels, models: []bootstrap.ModelConfig{{Name: "m1"}}, modelOrigins: []string{"m1"}}
+	st.cursor = 1
+	m := Model{modelConfig: st}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if len(st.models) != 1 || len(st.modelOrigins) != 1 || st.cursor != 1 {
+		t.Fatalf("取消新增应清理临时行，models=%#v origins=%#v cursor=%d", st.models, st.modelOrigins, st.cursor)
 	}
 }
 
@@ -139,10 +220,218 @@ func TestParseContextWindowInput(t *testing.T) {
 }
 
 func TestModelConfigModalDoesNotRenderAPIKey(t *testing.T) {
-	state := &modelConfigState{step: configStepKeyInput, input: "sk-super-secret"}
+	state := &modelConfigState{step: configStepHub, provider: "proxy", apiKeyOptional: true}
+	state.beginInlineEdit("key")
+	state.input.SetValue("sk-super-secret")
 	view := renderModelConfigModal(120, state)
 	if strings.Contains(view, "sk-super-secret") {
 		t.Fatal("API key leaked into rendered modal")
+	}
+}
+
+func TestProviderHubEditsAPIKeyInlineAndTrims(t *testing.T) {
+	state := &modelConfigState{step: configStepHub, provider: "proxy", existing: true,
+		hasAPIKey: true, apiKeyHint: "sk-o******7890", apiKeyOptional: true, apiKeyAction: host.APIKeyKeep}
+	state.cursor = hubFieldIndex(state.hubFields(), "key")
+	m := Model{modelConfig: state}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if state.step != configStepHub || state.editingField != "key" {
+		t.Fatalf("API Key 应在 hub 原行编辑，得到 step=%d field=%q", state.step, state.editingField)
+	}
+	state.input.SetValue("  sk-new-secret-1234567890  ")
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if state.editingField != "" || state.apiKey != "sk-new-secret-1234567890" || state.apiKeyAction != host.APIKeyReplace {
+		t.Fatalf("API Key 行内提交结果错误: field=%q key=%q action=%q", state.editingField, state.apiKey, state.apiKeyAction)
+	}
+	if got := state.keyStatus(); got != "sk-n******7890" {
+		t.Fatalf("新 API Key 应显示脱敏提示，得到 %q", got)
+	}
+}
+
+func TestProviderHubEditsBaseURLInlineAndKeepsLongTailVisible(t *testing.T) {
+	state := &modelConfigState{step: configStepHub, provider: "proxy", existing: true,
+		apiKeyOptional: true, baseURL: "https://old.example/v1"}
+	state.cursor = hubFieldIndex(state.hubFields(), "baseurl")
+	m := Model{modelConfig: state}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if state.editingField != "baseurl" || state.input.Value() != "https://old.example/v1" {
+		t.Fatalf("Base URL 应在原行预填编辑，field=%q value=%q", state.editingField, state.input.Value())
+	}
+	state.input.SetValue("  https://example.com/a/very/long/provider/path/UNIQUE-END  ")
+	state.input.CursorEnd()
+	view := renderModelConfigModal(76, state)
+	if !strings.Contains(view, "UNIQUE-END") {
+		t.Fatalf("长 Base URL 编辑时应显示光标附近尾部:\n%s", view)
+	}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if state.baseURL != "https://example.com/a/very/long/provider/path/UNIQUE-END" {
+		t.Fatalf("Base URL 未 TrimSpace，得到 %q", state.baseURL)
+	}
+}
+
+func TestSaveConfigHighlightsOnlyWhenDirty(t *testing.T) {
+	state := &modelConfigState{editModelIdx: -1}
+	state.applyProviderChoice(configProviderChoice{existing: &host.ProviderSnapshot{
+		Name: "proxy", Type: "openai", BaseURL: "https://old.example/v1", HasAPIKey: true,
+		APIKeyHint: "sk-o******7890", Models: []bootstrap.ModelConfig{{Name: "m1"}},
+	}})
+	if state.isDirty() {
+		t.Fatal("刚进入已有 Provider 时不应标记为已修改")
+	}
+	state.baseURL = "https://new.example/v1"
+	if !state.isDirty() {
+		t.Fatal("Base URL 变化后应标记为已修改")
+	}
+	state.baseURL = "https://old.example/v1"
+	if state.isDirty() {
+		t.Fatal("改回基线值后应自动恢复未修改状态")
+	}
+	state.beginInlineEdit("baseurl")
+	state.input.SetValue("https://editing.example/v1")
+	if !state.isDirty() {
+		t.Fatal("Base URL 正在输入新值时应实时标记为已修改")
+	}
+	state.input.SetValue(" https://old.example/v1 ")
+	if state.isDirty() {
+		t.Fatal("行内输入等价于基线值时不应误报修改")
+	}
+	state.editingField = ""
+	state.apiKeyAction = host.APIKeyReplace
+	state.apiKey = "sk-new-secret"
+	if !state.isDirty() {
+		t.Fatal("替换 API Key 后应标记为已修改")
+	}
+
+	oldProfile := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(oldProfile) })
+	lines := renderProviderHubFields(state, 68)
+	want := lipgloss.NewStyle().Foreground(colorSuccess).Render("保存配置")
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, want) {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("有变更时保存项应使用成功色，lines=%q", lines)
+	}
+
+	newProvider := &modelConfigState{}
+	if !newProvider.isDirty() {
+		t.Fatal("新增 Provider 应始终视为未保存变更")
+	}
+}
+
+func TestStyledBaseURLLineKeepsANSIAndFillsModalWidth(t *testing.T) {
+	plain := "› Base URL  https://api.deepseek.com"
+	styled := "\x1b[38;2;255;200;0m› \x1b[0m" +
+		"\x1b[1;38;2;255;200;0mBase URL\x1b[0m  " +
+		"\x1b[4;38;2;220;220;220mhttps://api.deepseek.com\x1b[0m"
+	if got := ansi.Strip(truncateStyledWidth(styled, 56)); got != plain {
+		t.Fatalf("ANSI 感知截断破坏了输入行: %q", got)
+	}
+
+	modal := renderPaddedModalFrame(60, 3, "/config", "", []string{styled})
+	lines := strings.Split(modal, "\n")
+	if len(lines) != 3 || lipgloss.Width(lines[1]) != 60 {
+		t.Fatalf("浮层输入行没有填满固定宽度: width=%d\n%s", lipgloss.Width(lines[1]), modal)
+	}
+	if !strings.Contains(ansi.Strip(lines[1]), "https://api.deepseek.com") {
+		t.Fatalf("浮层丢失 Base URL:\n%s", modal)
+	}
+}
+
+func TestProviderHubDeleteClearsOnlyOptionalAPIKey(t *testing.T) {
+	optional := &modelConfigState{step: configStepHub, provider: "proxy", providerType: "openai",
+		hasAPIKey: true, apiKeyHint: "sk-o******7890", apiKeyOptional: true, apiKeyAction: host.APIKeyKeep}
+	optional.cursor = hubFieldIndex(optional.hubFields(), "key")
+	m := Model{modelConfig: optional}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyDelete})
+	if optional.apiKeyAction != host.APIKeyClear || optional.keyStatus() != "已清除" {
+		t.Fatalf("可选 Key 的 Delete 应标记清除，action=%q status=%q", optional.apiKeyAction, optional.keyStatus())
+	}
+
+	required := &modelConfigState{step: configStepHub, provider: "openrouter",
+		hasAPIKey: true, apiKeyHint: "sk-o******7890", apiKeyOptional: false, apiKeyAction: host.APIKeyKeep}
+	required.cursor = hubFieldIndex(required.hubFields(), "key")
+	m = Model{modelConfig: required}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyDelete})
+	if required.apiKeyAction != host.APIKeyKeep || !strings.Contains(required.message, "不能清除") {
+		t.Fatalf("必需 Key 不应被清除，action=%q message=%q", required.apiKeyAction, required.message)
+	}
+}
+
+func TestConfigTextInputSupportsCursorEditing(t *testing.T) {
+	state := &modelConfigState{step: configStepCustomName}
+	state.startTextInput("ac", "Provider 名称", false)
+	state.input.SetCursor(1)
+	m := Model{modelConfig: state}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'b'}})
+	if got := state.input.Value(); got != "abc" {
+		t.Fatalf("统一输入框应支持在光标处插入，得到 %q", got)
+	}
+}
+
+func TestProviderHubShowsConfigPathAndConnectionAction(t *testing.T) {
+	state := &modelConfigState{
+		step: configStepHub, provider: "proxy", apiKeyOptional: true, currentModel: "m2",
+		models:   []bootstrap.ModelConfig{{Name: "m1"}, {Name: "m2"}},
+		snapshot: host.ModelConfigurationSnapshot{ConfigPath: `C:\work\.ainovel\config.json`},
+	}
+	fields := state.hubFields()
+	idx := hubFieldIndex(fields, "test")
+	if idx < 0 || fields[idx].value != "m2" {
+		t.Fatalf("测试连接应优先当前模型，fields=%#v", fields)
+	}
+	view := renderModelConfigModal(120, state)
+	for _, want := range []string{"高级配置", "extra_body"} {
+		if !strings.Contains(view, want) {
+			t.Fatalf("配置 Hub 缺少 %q:\n%s", want, view)
+		}
+	}
+	compact := strings.NewReplacer("\r", "", "\n", "", " ", "", "│", "").Replace(view)
+	if !strings.Contains(compact, `C:\work\.ainovel\config.json`) {
+		t.Fatalf("配置 Hub 未完整展示配置路径:\n%s", view)
+	}
+}
+
+func TestModelConfigMessageWrapKeepsErrorTail(t *testing.T) {
+	state := &modelConfigState{step: configStepHub, provider: "proxy", apiKeyOptional: true,
+		message: "连接失败：" + strings.Repeat("上游返回了很长的错误信息", 8) + " UNIQUE-ERROR-TAIL"}
+	view := renderModelConfigModal(64, state)
+	compact := strings.NewReplacer("\r", "", "\n", "", " ", "", "│", "").Replace(view)
+	if !strings.Contains(compact, "UNIQUE-ERROR-TAIL") {
+		t.Fatalf("长错误不应截断尾部:\n%s", view)
+	}
+}
+
+func TestConnectionActionStartsAsyncTestWithoutLeavingHub(t *testing.T) {
+	state := &modelConfigState{step: configStepHub, provider: "proxy", providerType: "openai",
+		apiKeyOptional: true, models: []bootstrap.ModelConfig{{Name: "m1"}}}
+	state.cursor = hubFieldIndex(state.hubFields(), "test")
+	m := Model{modelConfig: state}
+	_, cmd := m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || !state.testing || state.step != configStepHub {
+		t.Fatalf("测试连接应异步留在 hub，cmd=%v testing=%v step=%d", cmd != nil, state.testing, state.step)
+	}
+}
+
+func TestConnectionTestCanBeCancelled(t *testing.T) {
+	cancelled := false
+	state := &modelConfigState{step: configStepHub, provider: "proxy", testing: true,
+		testCancel: func() { cancelled = true }}
+	m := Model{modelConfig: state}
+	m.handleModelConfigKey(tea.KeyMsg{Type: tea.KeyEsc})
+	if !cancelled || !state.testing || state.message != "正在取消连接测试..." {
+		t.Fatalf("Esc 应取消在途测试并等待结果，cancelled=%v testing=%v message=%q", cancelled, state.testing, state.message)
+	}
+
+	updated, _, handled := m.handleRuntimeMsg(modelConfigConnectionMsg{err: context.Canceled})
+	m = updated.(Model)
+	if !handled || m.modelConfig.testing || m.modelConfig.message != "连接测试已取消" {
+		t.Fatalf("取消结果未正确收敛: handled=%v testing=%v message=%q", handled, m.modelConfig.testing, m.modelConfig.message)
 	}
 }
 

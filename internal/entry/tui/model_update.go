@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -572,6 +574,20 @@ func (m Model) handleRuntimeMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		m.modelConfig = nil
 		return m, tea.Batch(fetchSnapshot(m.runtime), m.textarea.Focus()), true
+	case modelConfigConnectionMsg:
+		if m.modelConfig == nil {
+			return m, nil, true
+		}
+		m.modelConfig.testing = false
+		m.modelConfig.testCancel = nil
+		if errors.Is(msg.err, context.Canceled) {
+			m.modelConfig.message = "连接测试已取消"
+		} else if msg.err != nil {
+			m.modelConfig.message = msg.err.Error()
+		} else {
+			m.modelConfig.message = "连接测试成功：" + msg.model
+		}
+		return m, nil, true
 	case startResultMsg:
 		next, cmd := m.handleStartResultMsg(msg)
 		return next, cmd, true
