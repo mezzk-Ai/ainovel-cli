@@ -285,7 +285,6 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 1. `~/.ainovel/config.json` — 全局配置
 2. `./.ainovel/config.json` — 项目级覆盖（可选）
-3. `--config path/to/config.json` — 命令行指定
 
 > 项目级 `.ainovel/` 是全局 `~/.ainovel/` 的镜像：同样的结构、只是根目录从家目录换成当前项目。配置放 `./.ainovel/config.json`，写作规则放 `./.ainovel/rules/*.md`（详见下文「去 AI 味与自定义规则」）。该目录含密钥，已默认加入 `.gitignore`。
 
@@ -294,7 +293,7 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 - 标量字段按后者覆盖前者，例如 `provider`、`model`、`reasoning_effort`、`style`
 - `providers` 和 `roles` 按 key 合并，同名项内部按字段覆盖
 - 未填写的字段会继承上层配置，例如项目级配置只写 `base_url` 时会保留全局配置中的 `api_key`
-- 顶层标量当前不支持用空字符串清空上层值；Provider 的 `type` / `api` / `api_key` / `base_url` 可通过 `/config` 显式清空
+- 不支持用空字符串清空上层已有值；如需清空，请直接编辑更高优先级的配置文件
 
 > ⚠️ `provider`（以及 `roles.*.provider`）的值是 `providers` 里的 **key 名**——一根指针，不是协议名。项目级若把 `provider` 切到一个全局 `providers` 里不存在的账号，必须在项目级同时补上该账号的凭证（`api_key` / `base_url`），否则启动会报“未配置凭证”。
 
@@ -302,9 +301,9 @@ docker compose run --rm ainovel --headless --prompt "写一本悬疑短篇"
 
 上下文窗口按“模型专属值 → 旧顶层 `context_window` → 模型注册表 → 200K 兜底”的顺序解析。它只影响本地上下文压缩时机，不改变远端 API 的真实请求限制。
 
-`/config` 的模型列表中，`A` 新增、`E` 编辑窗口、`D` 删除、`Enter` 设为默认、`S` 进入保存；窗口可输入整数、`128K`、`1M`，留空表示自动解析。保存时可选择全局配置、当前项目配置或本次 `--config` 指定文件，界面会提示更高优先级覆盖风险。API Key 输入始终隐藏。
+`/config` 的模型列表中，`A` 新增、`E` 编辑窗口、`D` 删除、`Enter` 设为默认、`S` 保存；窗口可输入整数、`128K`、`1M`，留空表示自动解析。保存**就近写回当前生效的那份配置**——项目目录有 `./.ainovel/config.json` 就写它，否则写全局 `~/.ainovel/config.json`——并立即生效。API Key 输入始终隐藏。
 
-`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model 或推理强度后，会写回全局配置 `~/.ainovel/config.json`。
+`reasoning_effort` 为默认推理强度，可选值为 `off` / `low` / `medium` / `high` / `xhigh` / `max`；省略或空字符串表示沿用模型/provider 默认。`roles.<role>.reasoning_effort` 可按角色覆盖，未配置时继承顶层 `reasoning_effort`。TUI `/model` 面板切换 provider、model 或推理强度后，会写回当前生效的那份配置（与 `/config` 一致：项目级存在则写项目，否则写全局）。
 
 `providers.<name>.api` 仅对 `type: "openai"` 或内置 `openai` 生效，用于选择 OpenAI 协议 endpoint：`chat`（默认，`/v1/chat/completions`）或 `responses`（`/v1/responses`）。Codex 类代理通常需要配置为 `responses`。
 

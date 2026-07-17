@@ -49,7 +49,7 @@ type Host struct {
 	budget          *BudgetSentinel     // 预算政策；未启用为 nil（方法 nil 安全）
 	gate            *ChapterAdvanceGate // 章节许可与一次性暂停的统一政策组件
 	notifier        *notify.Notifier    // 无人值守告警；未启用为 nil（Send nil 安全）
-	configTargets   []bootstrap.ConfigTarget
+	configPath      string              // 配置写盘目标：/config、/model 就近写当前生效的那份（项目级存在则写它，否则全局）
 
 	events   chan Event
 	streamCh chan string
@@ -82,17 +82,8 @@ const (
 	lifecycleCompleted lifecycle = "completed"
 )
 
-type Options struct {
-	ConfigPath string
-}
-
-// New 创建使用默认配置目标的 Host。
+// New 创建 Host。
 func New(cfg bootstrap.Config, bundle assets.Bundle) (*Host, error) {
-	return NewWithOptions(cfg, bundle, Options{})
-}
-
-// NewWithOptions 创建 Host，并保留启动时的配置来源供 TUI /config 选择写入目标。
-func NewWithOptions(cfg bootstrap.Config, bundle assets.Bundle, opts Options) (*Host, error) {
 	cfg.FillDefaults()
 	if err := cfg.ValidateBase(); err != nil {
 		return nil, err
@@ -162,7 +153,7 @@ func NewWithOptions(cfg bootstrap.Config, bundle assets.Bundle, opts Options) (*
 		userRules:       userrules.NewService(store, models.Default, rules.DefaultOptions()),
 		usage:           usage,
 		usageCancel:     usageCancel,
-		configTargets:   bootstrap.ConfigTargets(opts.ConfigPath),
+		configPath:      bootstrap.EffectiveConfigPath(),
 		events:          make(chan Event, 100),
 		streamCh:        make(chan string, 256),
 		done:            make(chan struct{}, 4),
@@ -1228,8 +1219,8 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 		h.cfg.Roles[role] = rc
 	}
 	h.normalizeThinkingLocked(role)
-	if path := bootstrap.DefaultConfigPath(); path != "" {
-		if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
+	if h.configPath != "" {
+		if err := bootstrap.SaveConfig(h.configPath, h.cfg); err != nil {
 			slog.Warn("保存配置失败", "module", "host", "err", err)
 		}
 	}
@@ -1354,8 +1345,8 @@ func (h *Host) SetRoleThinking(role, level string) error {
 		rc.ReasoningEffort = string(parsed)
 		h.cfg.Roles[role] = rc
 	}
-	if path := bootstrap.DefaultConfigPath(); path != "" {
-		if err := bootstrap.SaveConfig(path, h.cfg); err != nil {
+	if h.configPath != "" {
+		if err := bootstrap.SaveConfig(h.configPath, h.cfg); err != nil {
 			slog.Warn("保存配置失败", "module", "host", "err", err)
 		}
 	}
@@ -1554,12 +1545,13 @@ func (h *Host) importCaller(fn string) imp.Caller {
 // TODO(json-schema)：与全仓其它调用点统一改造 JSON Schema 模式时，在此按模型级核验能力。
 func (h *Host) importModelRuntime(role string, model agentcore.ChatModel) imp.ModelRuntime {
 	var rt imp.ModelRuntime
-	_, name, _ := h.models.CurrentSelection(role)
+	provider, name, _ := h.models.CurrentSelection(role)
 	if name == "" {
 		name = bootstrap.ModelName(model)
+		provider = bootstrap.ModelProvider(model)
 	}
 	// context / completion 上限：registry 是唯一可信来源（被包装模型的 Info() 不含窗口）。
-	rt.ContextTokens, _ = h.cfg.ResolveContextWindow(name)
+	rt.ContextTokens, _ = h.cfg.ResolveContextWindow(provider, name)
 	if entry, ok := modelreg.DefaultRegistry().Resolve(name); ok {
 		rt.MaxOutputTokens = entry.MaxTokens
 	}

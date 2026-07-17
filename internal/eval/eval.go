@@ -40,7 +40,13 @@ func Command(argv []string) int {
 		return 2
 	}
 
-	cfg, err := bootstrap.LoadConfig(*configPath)
+	// eval 的 -config 指向独立文件时按单文件加载（可复现、不被本机全局/项目污染）；
+	// 缺省则走默认的全局+项目两层合并。
+	loadConfig := bootstrap.LoadConfig
+	if strings.TrimSpace(*configPath) != "" {
+		loadConfig = func() (bootstrap.Config, error) { return bootstrap.LoadConfigFile(*configPath) }
+	}
+	cfg, err := loadConfig()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "eval: 加载配置失败: %v\n", err)
 		return 2

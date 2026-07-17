@@ -19,12 +19,8 @@ import (
 //go:embed config.example.jsonc
 var exampleConfig string
 
-// NeedsSetup 检查是否需要首次引导（配置文件不存在时触发）。
-func NeedsSetup(flagPath string) bool {
-	if flagPath != "" {
-		_, err := os.Stat(flagPath)
-		return os.IsNotExist(err)
-	}
+// NeedsSetup 检查是否需要首次引导（全局与项目级配置都不存在时触发）。
+func NeedsSetup() bool {
 	if p := DefaultConfigPath(); p != "" {
 		if _, err := os.Stat(p); err == nil {
 			return false

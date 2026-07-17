@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -58,30 +59,6 @@ func TestResolveContextWindowIsProviderAware(t *testing.T) {
 	}
 }
 
-func TestMergeConfigCanExplicitlyClearProviderFields(t *testing.T) {
-	base := Config{Providers: map[string]ProviderConfig{
-		"proxy": {Type: "openai", API: "responses", APIKey: "secret", BaseURL: "https://old.example/v1"},
-	}}
-	var overlay Config
-	if err := json.Unmarshal([]byte(`{"providers":{"proxy":{"type":"","api":"","api_key":"","base_url":""}}}`), &overlay); err != nil {
-		t.Fatalf("unmarshal overlay: %v", err)
-	}
-	merged := mergeConfig(base, overlay)
-	pc := merged.Providers["proxy"]
-	if pc.Type != "" || pc.API != "" || pc.APIKey != "" || pc.BaseURL != "" {
-		t.Fatalf("explicit clears not applied: %#v", pc)
-	}
-	data, err := json.Marshal(pc)
-	if err != nil {
-		t.Fatalf("marshal: %v", err)
-	}
-	for _, field := range []string{`"type":""`, `"api":""`, `"api_key":""`, `"base_url":""`} {
-		if !strings.Contains(string(data), field) {
-			t.Errorf("cleared field %s missing from %s", field, data)
-		}
-	}
-}
-
 func TestSaveModelConfigPreservesOtherFieldsAndUsesPrivateMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".ainovel", "config.json")
 	original := Config{
@@ -106,11 +83,15 @@ func TestSaveModelConfigPreservesOtherFieldsAndUsesPrivateMode(t *testing.T) {
 	if _, ok := got.Providers["old"]; !ok {
 		t.Fatal("existing provider was removed")
 	}
-	info, err := os.Stat(path)
-	if err != nil {
-		t.Fatalf("stat: %v", err)
-	}
-	if info.Mode().Perm() != 0o600 {
-		t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
+	// 权限断言只在有 POSIX 权限位语义的平台上有意义：Windows 把一切上报为
+	// 0666/0444，此断言在该平台恒假（参见 version.TestReplaceExecutable 同款处理）。
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			t.Fatalf("stat: %v", err)
+		}
+		if info.Mode().Perm() != 0o600 {
+			t.Fatalf("config mode = %o, want 600", info.Mode().Perm())
+		}
 	}
 }

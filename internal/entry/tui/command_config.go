@@ -27,7 +27,6 @@ const (
 	configStepModels
 	configStepModelName
 	configStepModelWindow
-	configStepTarget
 )
 
 type configProviderChoice struct {
@@ -60,7 +59,6 @@ type modelConfigState struct {
 
 	pendingModel string
 	editModelIdx int
-	targetIdx    int
 }
 
 func newModelConfigState(rt *host.Host) *modelConfigState {
@@ -167,45 +165,6 @@ func (s *modelConfigState) beginBaseURL() {
 	s.cursor = 0
 }
 
-func (s *modelConfigState) beginTargets() bool {
-	if len(s.models) == 0 || s.defaultModel == "" {
-		s.message = "请至少添加一个模型并选择默认模型"
-		return false
-	}
-	s.step = configStepTarget
-	s.cursor = 0
-	s.targetIdx = 0
-	for i, target := range s.snapshot.Targets {
-		if target.Exists {
-			s.targetIdx = i
-			break
-		}
-	}
-	s.cursor = s.targetIdx
-	s.message = ""
-	return true
-}
-
-func (s *modelConfigState) selectedTarget() (bootstrap.ConfigTarget, bool) {
-	if s.cursor < 0 || s.cursor >= len(s.snapshot.Targets) {
-		return bootstrap.ConfigTarget{}, false
-	}
-	return s.snapshot.Targets[s.cursor], true
-}
-
-func (s *modelConfigState) targetWarning() string {
-	target, ok := s.selectedTarget()
-	if !ok {
-		return ""
-	}
-	for _, candidate := range s.snapshot.Targets {
-		if candidate.Exists && candidate.Precedence > target.Precedence {
-			return "警告：重启时可能被更高优先级的 " + candidate.Label + " 覆盖"
-		}
-	}
-	return ""
-}
-
 func (s *modelConfigState) deleteSelectedModel() {
 	if s.cursor < 0 || s.cursor >= len(s.models) {
 		return
@@ -229,11 +188,11 @@ func (s *modelConfigState) deleteSelectedModel() {
 	s.message = ""
 }
 
-func (s *modelConfigState) draft(targetID string) host.ModelConfigurationDraft {
+func (s *modelConfigState) draft() host.ModelConfigurationDraft {
 	return host.ModelConfigurationDraft{
 		Provider: s.provider, Type: s.providerType, API: s.api, BaseURL: s.baseURL,
 		Models: append([]bootstrap.ModelConfig(nil), s.models...), DefaultModel: s.defaultModel,
-		APIKeyAction: s.apiKeyAction, APIKey: s.apiKey, TargetID: targetID,
+		APIKeyAction: s.apiKeyAction, APIKey: s.apiKey,
 	}
 }
 
@@ -348,7 +307,13 @@ func (m Model) handleModelConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case "d":
 			state.deleteSelectedModel()
 		case "s", "ctrl+s":
-			state.beginTargets()
+			if len(state.models) == 0 || state.defaultModel == "" {
+				state.message = "请至少添加一个模型并选择默认模型"
+				break
+			}
+			state.saving = true
+			state.message = "正在校验并保存配置..."
+			return m, saveModelConfiguration(m.runtime, state.draft())
 		default:
 			if msg.Type == tea.KeyEnter && len(state.models) > 0 {
 				state.defaultModel = state.models[state.cursor].Name
@@ -394,18 +359,6 @@ func (m Model) handleModelConfigKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			state.editModelIdx = -1
 			state.pendingModel = ""
 			state.message = ""
-		}
-	case configStepTarget:
-		moveConfigCursor(state, msg, len(state.snapshot.Targets))
-		if msg.Type == tea.KeyEnter {
-			target, ok := state.selectedTarget()
-			if !ok {
-				state.message = "没有可用的配置保存位置"
-				break
-			}
-			state.saving = true
-			state.message = "正在校验并保存配置..."
-			return m, saveModelConfiguration(m.runtime, state.draft(target.ID))
 		}
 	}
 	return m, nil
@@ -569,20 +522,6 @@ func renderModelConfigModal(width, height int, state *modelConfigState) string {
 		lines = append(lines, lipgloss.NewStyle().Foreground(colorDim).Render("留空或 0 = 自动解析；支持 128K / 1M"))
 		lines = append(lines, renderConfigInput(state.input, false, contentW))
 		hint = configInputHint
-	case configStepTarget:
-		lines = append(lines, configHeading("选择配置保存位置"))
-		var labels []string
-		for _, target := range state.snapshot.Targets {
-			exists := "新建"
-			if target.Exists {
-				exists = "已有"
-			}
-			labels = append(labels, fmt.Sprintf("%s · %s · %s", target.Label, exists, target.Path))
-		}
-		lines = append(lines, renderConfigChoices(labels, state.cursor, contentW, 8)...)
-		if warning := state.targetWarning(); warning != "" {
-			lines = append(lines, lipgloss.NewStyle().Foreground(colorReview).Render(truncateWidth(warning, contentW)))
-		}
 	}
 
 	if state.message != "" {

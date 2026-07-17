@@ -55,28 +55,47 @@ func TestLoadConfig_CorruptProjectFailsLoud(t *testing.T) {
 	// 手抄示例多了个尾逗号——最常见的坏 JSON。
 	writeProjectConfig(t, `{ "model": "x", }`)
 
-	if _, err := LoadConfig(""); err == nil {
+	if _, err := LoadConfig(); err == nil {
 		t.Fatal("坏的 ./.ainovel/config.json 应当报错，却被静默忽略了")
 	}
 }
 
-// 全局是最低优先级基底：坏文件不得阻断更高优先级的 --config 覆盖（回归守卫——
-// 上一版误把全局也 fail-loud，导致"坏全局 + 有效 --config"的用户被无关文件挡住）。
-func TestLoadConfig_CorruptGlobalDoesNotBlockOverride(t *testing.T) {
+// 全局是最低优先级基底：坏文件不得阻断更高优先级的项目级覆盖（回归守卫——
+// 上一版误把全局也 fail-loud，导致"坏全局 + 有效项目配置"的用户被无关文件挡住）。
+func TestLoadConfig_CorruptGlobalDoesNotBlockProjectOverride(t *testing.T) {
 	writeGlobal(t, `{ not json`)
 	proj := t.TempDir()
 	t.Chdir(proj)
-	good := filepath.Join(proj, "good.json")
-	if err := os.WriteFile(good, []byte(validGlobal), 0o644); err != nil {
-		t.Fatalf("write override: %v", err)
-	}
+	writeProjectConfig(t, validGlobal)
 
-	cfg, err := LoadConfig(good)
+	cfg, err := LoadConfig()
 	if err != nil {
-		t.Fatalf("坏全局不应阻断有效 --config，得到: %v", err)
+		t.Fatalf("坏全局不应阻断有效项目级配置，得到: %v", err)
 	}
 	if cfg.Provider != "openrouter" {
-		t.Errorf("应使用 --config 的值，得到 provider=%q", cfg.Provider)
+		t.Errorf("应使用项目级配置的值，得到 provider=%q", cfg.Provider)
+	}
+}
+
+// 就近编辑：项目目录有 ./.ainovel/config.json 时 EffectiveConfigPath 指向它（绝对路径），
+// 否则回落全局——/config 与 /model 都据此决定写盘位置。
+func TestEffectiveConfigPathPrefersProject(t *testing.T) {
+	writeGlobal(t, validGlobal)
+
+	t.Chdir(t.TempDir()) // 无项目配置
+	if got := EffectiveConfigPath(); got != DefaultConfigPath() {
+		t.Fatalf("无项目配置应回落全局，got %q want %q", got, DefaultConfigPath())
+	}
+
+	proj := t.TempDir()
+	t.Chdir(proj)
+	writeProjectConfig(t, validGlobal)
+	wantAbs, err := filepath.Abs(filepath.Join(".ainovel", "config.json"))
+	if err != nil {
+		t.Fatalf("abs: %v", err)
+	}
+	if got := EffectiveConfigPath(); got != wantAbs {
+		t.Fatalf("有项目配置应写项目，got %q want %q", got, wantAbs)
 	}
 }
 
@@ -87,7 +106,7 @@ func TestLoadConfig_MissingFilesNoError(t *testing.T) {
 	t.Setenv("USERPROFILE", home)
 	t.Chdir(t.TempDir()) // 也没有 ./.ainovel/config.json
 
-	if _, err := LoadConfig(""); err != nil {
+	if _, err := LoadConfig(); err != nil {
 		t.Fatalf("缺失配置文件不应报错，得到: %v", err)
 	}
 }
@@ -109,7 +128,7 @@ func TestLoadConfig_ValidMergeWorks(t *testing.T) {
   }
 }`)
 
-	cfg, err := LoadConfig("")
+	cfg, err := LoadConfig()
 	if err != nil {
 		t.Fatalf("有效配置不应报错: %v", err)
 	}

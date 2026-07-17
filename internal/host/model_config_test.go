@@ -25,7 +25,7 @@ func newModelConfigTestHost(t *testing.T) (*Host, string) {
 	path := filepath.Join(t.TempDir(), "config.json")
 	return &Host{
 		cfg: cfg, models: models, events: make(chan Event, 4),
-		configTargets: []bootstrap.ConfigTarget{{ID: "test", Label: "test", Path: path}},
+		configPath: path,
 	}, path
 }
 
@@ -34,7 +34,7 @@ func TestConfigureModelsRejectsDeletingReferencedModel(t *testing.T) {
 	err := h.ConfigureModels(ModelConfigurationDraft{
 		Provider: "proxy", Type: "openai", BaseURL: "https://example.com/v1",
 		Models: []bootstrap.ModelConfig{{Name: "new"}}, DefaultModel: "new",
-		APIKeyAction: APIKeyKeep, TargetID: "test",
+		APIKeyAction: APIKeyKeep,
 	})
 	if err == nil || !strings.Contains(err.Error(), "writer") {
 		t.Fatalf("expected writer reference error, got %v", err)
@@ -50,7 +50,7 @@ func TestConfigureModelsPersistsAndHotApplies(t *testing.T) {
 	err := h.ConfigureModels(ModelConfigurationDraft{
 		Provider: "proxy", Type: "openai", API: "responses", BaseURL: "https://new.example/v1",
 		Models:       []bootstrap.ModelConfig{{Name: "new", ContextWindow: 640000}, {Name: "writer-model"}},
-		DefaultModel: "new", APIKeyAction: APIKeyKeep, TargetID: "test",
+		DefaultModel: "new", APIKeyAction: APIKeyKeep,
 	})
 	if err != nil {
 		t.Fatalf("configure: %v", err)

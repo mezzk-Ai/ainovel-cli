@@ -50,57 +50,34 @@ func projectConfigPath() string {
 	return filepath.Join(configDirName, "config.json")
 }
 
-// ConfigTarget 是 /config 可选择的配置写入位置。
-type ConfigTarget struct {
-	ID         string
-	Label      string
-	Path       string
-	Precedence int
-	Exists     bool
-}
-
-// ConfigTargets 返回从高到低排列的可写配置目标。flagPath 为空时不提供指定文件项。
-func ConfigTargets(flagPath string) []ConfigTarget {
-	var targets []ConfigTarget
-	seen := make(map[string]bool)
-	add := func(id, label, path string, precedence int) {
-		if path == "" {
-			return
+// EffectiveConfigPath 返回 TUI 改动（/config、/model）应写回的配置文件：
+// 项目目录有 ./.ainovel/config.json 就写它——与读取时项目层覆盖全局的方向一致，
+// 保证"改当前生效的那份"、改完立刻生效；否则写全局 ~/.ainovel/config.json。
+// 仅编辑已存在的项目配置，不会凭空创建（创建项目覆盖是用户主动放文件的动作）。
+func EffectiveConfigPath() string {
+	rel := projectConfigPath()
+	if _, err := os.Stat(rel); err == nil {
+		if abs, err := filepath.Abs(rel); err == nil {
+			return abs
 		}
-		if abs, err := filepath.Abs(path); err == nil {
-			path = abs
-		}
-		path = filepath.Clean(path)
-		if seen[path] {
-			return
-		}
-		seen[path] = true
-		_, err := os.Stat(path)
-		targets = append(targets, ConfigTarget{
-			ID: id, Label: label, Path: path, Precedence: precedence, Exists: err == nil,
-		})
+		return rel
 	}
-	add("flag", "--config 指定文件", flagPath, 3)
-	add("project", "当前项目配置", projectConfigPath(), 2)
-	add("global", "全局配置", DefaultConfigPath(), 1)
-	return targets
+	return DefaultConfigPath()
 }
 
 // LoadConfig 按优先级加载并合并配置：
 //  1. ~/.ainovel/config.json（全局）
 //  2. ./.ainovel/config.json（项目级覆盖）
-//  3. flagPath 指定的路径（最高优先级）
-func LoadConfig(flagPath string) (Config, error) {
+func LoadConfig() (Config, error) {
 	var cfg Config
 
-	// 1. 全局配置。它是最低优先级基底，坏文件降级为告警而非阻断——可被项目级
-	//    / --config 覆盖；硬失败会把"坏全局 + 有效 --config"的用户挡在门外，
-	//    违反 --config"我明确指定这个"的语义。
+	// 1. 全局配置。它是最低优先级基底，坏文件降级为告警而非阻断——可被项目级覆盖；
+	//    硬失败会把"坏全局 + 有效项目配置"的用户挡在门外。
 	if p := DefaultConfigPath(); p != "" {
 		global, found, err := loadOptionalJSON(p)
 		switch {
 		case err != nil:
-			slog.Warn("全局配置解析失败，已忽略（可被项目级/--config 覆盖）", "module", "config", "path", p, "err", err)
+			slog.Warn("全局配置解析失败，已忽略（可被项目级覆盖）", "module", "config", "path", p, "err", err)
 		case found:
 			cfg = global
 		}
@@ -114,15 +91,6 @@ func LoadConfig(flagPath string) (Config, error) {
 	}
 	if found {
 		cfg = mergeConfig(cfg, project)
-	}
-
-	// 3. CLI flag 覆盖
-	if flagPath != "" {
-		override, err := loadJSONFile(flagPath)
-		if err != nil {
-			return cfg, fmt.Errorf("load config %s: %w", flagPath, err)
-		}
-		cfg = mergeConfig(cfg, override)
 	}
 
 	return cfg, nil
@@ -189,25 +157,20 @@ func mergeConfig(base, overlay Config) Config {
 		}
 		for k, v := range overlay.Providers {
 			existing := base.Providers[k]
-			if v.typeSet || v.Type != "" {
+			if v.Type != "" {
 				existing.Type = v.Type
-				existing.typeSet = true
 			}
-			if v.apiSet || v.API != "" {
+			if v.API != "" {
 				existing.API = v.API
-				existing.apiSet = true
 			}
-			if v.apiKeySet || v.APIKey != "" {
+			if v.APIKey != "" {
 				existing.APIKey = v.APIKey
-				existing.apiKeySet = true
 			}
-			if v.baseURLSet || v.BaseURL != "" {
+			if v.BaseURL != "" {
 				existing.BaseURL = v.BaseURL
-				existing.baseURLSet = true
 			}
-			if v.modelsSet || len(v.Models) > 0 {
+			if len(v.Models) > 0 {
 				existing.Models = append([]ModelConfig(nil), v.Models...)
-				existing.modelsSet = true
 			}
 			if len(v.ExtraBody) > 0 {
 				existing.ExtraBody = cloneMap(v.ExtraBody)

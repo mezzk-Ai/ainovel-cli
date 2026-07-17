@@ -32,7 +32,6 @@ type ModelConfigurationSnapshot struct {
 	Providers       []ProviderSnapshot
 	DefaultProvider string
 	DefaultModel    string
-	Targets         []bootstrap.ConfigTarget
 	References      map[string][]string
 }
 
@@ -50,7 +49,6 @@ type ModelConfigurationDraft struct {
 	DefaultModel string
 	APIKeyAction APIKeyAction
 	APIKey       string
-	TargetID     string
 }
 
 type ConfiguredModel struct {
@@ -103,7 +101,7 @@ func (h *Host) ModelConfiguration() ModelConfigurationSnapshot {
 
 	return ModelConfigurationSnapshot{
 		Providers: providers, DefaultProvider: h.cfg.Provider, DefaultModel: h.cfg.ModelName,
-		Targets: append([]bootstrap.ConfigTarget(nil), h.configTargets...), References: refs,
+		References: refs,
 	}
 }
 
@@ -137,9 +135,9 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	candidate := bootstrap.CloneConfig(h.cfg)
 	pc := candidate.Providers[draft.Provider]
 	oldModels := append([]bootstrap.ModelConfig(nil), pc.Models...)
-	pc.SetType(draft.Type)
-	pc.SetAPI(draft.API)
-	pc.SetBaseURL(draft.BaseURL)
+	pc.Type = draft.Type
+	pc.API = draft.API
+	pc.BaseURL = draft.BaseURL
 	configuredModels := make([]bootstrap.ModelConfig, 0, len(draft.Models))
 	defaultFound := false
 	seen := make(map[string]bool, len(draft.Models))
@@ -158,7 +156,7 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 		defaultFound = defaultFound || model.Name == draft.DefaultModel
 		configuredModels = append(configuredModels, model)
 	}
-	pc.SetModels(configuredModels)
+	pc.Models = configuredModels
 	if !defaultFound {
 		return fmt.Errorf("默认模型 %q 必须保存在模型列表中", draft.DefaultModel)
 	}
@@ -167,9 +165,9 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	case "", APIKeyKeep:
 		// 保留候选配置里的现有值；新增 provider 时自然为空。
 	case APIKeyReplace:
-		pc.SetAPIKey(draft.APIKey)
+		pc.APIKey = draft.APIKey
 	case APIKeyClear:
-		pc.SetAPIKey("")
+		pc.APIKey = ""
 	default:
 		return fmt.Errorf("未知 API Key 操作 %q", draft.APIKeyAction)
 	}
@@ -204,19 +202,10 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 		return fmt.Errorf("创建模型客户端失败: %w", err)
 	}
 
-	var target bootstrap.ConfigTarget
-	foundTarget := false
-	for _, item := range h.configTargets {
-		if item.ID == draft.TargetID {
-			target = item
-			foundTarget = true
-			break
-		}
+	if h.configPath == "" {
+		return fmt.Errorf("无法定位配置文件路径")
 	}
-	if !foundTarget {
-		return fmt.Errorf("未知配置保存目标 %q", draft.TargetID)
-	}
-	if err := bootstrap.SaveModelConfig(target.Path, draft.Provider, pc, draft.DefaultModel); err != nil {
+	if err := bootstrap.SaveModelConfig(h.configPath, draft.Provider, pc, draft.DefaultModel); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
@@ -228,7 +217,7 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	bootstrap.LogContextWindowChoice("default", draft.DefaultModel, window, source)
 	h.emitEvent(Event{
 		Time: time.Now(), Category: "SYSTEM", Level: "info",
-		Summary: fmt.Sprintf("模型配置已保存：%s/%s → %s", draft.Provider, draft.DefaultModel, target.Path),
+		Summary: fmt.Sprintf("模型配置已保存：%s/%s → %s", draft.Provider, draft.DefaultModel, h.configPath),
 	})
 	return nil
 }

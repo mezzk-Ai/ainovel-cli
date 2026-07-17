@@ -48,7 +48,7 @@ func main() {
 	headlessMode = opts.Headless
 
 	// 首次引导
-	if bootstrap.NeedsSetup(opts.ConfigPath) {
+	if bootstrap.NeedsSetup() {
 		if opts.Headless {
 			die("error: headless 模式不支持首次引导，请先运行一次 TUI 完成配置")
 		}
@@ -62,7 +62,7 @@ func main() {
 	}
 
 	// 加载配置
-	cfg, err := bootstrap.LoadConfig(opts.ConfigPath)
+	cfg, err := bootstrap.LoadConfig()
 	if err != nil {
 		die("config: %v", err)
 	}
@@ -120,13 +120,12 @@ func runWithConfig(cfg bootstrap.Config, opts cliOptions, args []string) {
 	if opts.Prompt != "" || opts.PromptFile != "" {
 		die("error: --prompt/--prompt-file 仅能在 --headless 模式下使用")
 	}
-	if err := tui.Run(cfg, bundle, versionInfo().Version, opts.ConfigPath); err != nil {
+	if err := tui.Run(cfg, bundle, versionInfo().Version); err != nil {
 		die("error: %v", err)
 	}
 }
 
 type cliOptions struct {
-	ConfigPath    string
 	Headless      bool
 	Prompt        string
 	PromptFile    string
@@ -163,12 +162,6 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 			if i+1 < len(argv) {
 				return opts, nil, fmt.Errorf("update 只接受一个可选版本参数")
 			}
-		case "--config":
-			if i+1 >= len(argv) {
-				return opts, nil, fmt.Errorf("--config 缺少值")
-			}
-			opts.ConfigPath = argv[i+1]
-			i++
 		case "--headless":
 			opts.Headless = true
 		case "--prompt":
@@ -190,10 +183,10 @@ func parseCLIOptions(argv []string) (cliOptions, []string, error) {
 	if opts.Prompt != "" && opts.PromptFile != "" {
 		return opts, nil, fmt.Errorf("--prompt 和 --prompt-file 不能同时使用")
 	}
-	if opts.Version && (opts.Update || opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
+	if opts.Version && (opts.Update || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
 		return opts, nil, fmt.Errorf("version 不能与其他启动参数混用")
 	}
-	if opts.Update && (opts.ConfigPath != "" || opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
+	if opts.Update && (opts.Headless || opts.Prompt != "" || opts.PromptFile != "" || len(args) > 0) {
 		return opts, nil, fmt.Errorf("update 不能与其他启动参数混用")
 	}
 	return opts, args, nil
