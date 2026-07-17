@@ -246,9 +246,10 @@ func CloneConfig(cfg Config) Config {
 	return clone
 }
 
-// SaveModelConfig 补丁式更新目标配置层的 provider 库和默认模型。
+// SaveProviderConfig 补丁式更新目标配置层里单个 provider 的凭证与模型库。
+// 只动 providers 段，绝不触碰顶层 provider/model 选择——“当前用哪个”归 /model。
 // 目标不存在时创建最小配置；目标损坏时拒绝覆盖。
-func SaveModelConfig(path string, provider string, pc ProviderConfig, model string) error {
+func SaveProviderConfig(path string, provider string, pc ProviderConfig) error {
 	target, found, err := loadOptionalJSON(path)
 	if err != nil {
 		return err
@@ -259,8 +260,6 @@ func SaveModelConfig(path string, provider string, pc ProviderConfig, model stri
 	if target.Providers == nil {
 		target.Providers = make(map[string]ProviderConfig)
 	}
-	target.Provider = provider
-	target.ModelName = model
 	target.Providers[provider] = pc
 	return SaveConfig(path, target)
 }

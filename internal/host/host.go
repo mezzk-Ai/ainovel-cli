@@ -1218,7 +1218,7 @@ func (h *Host) SwitchModel(role, provider, model string) error {
 		rc.Model = model
 		h.cfg.Roles[role] = rc
 	}
-	h.normalizeThinkingLocked(role)
+	// 换模型不改动已存的推理强度意图：只在下发时按新模型能力钳制。
 	if h.configPath != "" {
 		if err := bootstrap.SaveConfig(h.configPath, h.cfg); err != nil {
 			slog.Warn("保存配置失败", "module", "host", "err", err)
@@ -1263,40 +1263,16 @@ func (h *Host) AvailableThinking(role string) []agentcore.ThinkingLevel {
 	return agents.AvailableThinkingForModel(model)
 }
 
-func (h *Host) normalizeThinkingLocked(role string) agentcore.ThinkingLevel {
-	role = strings.ToLower(strings.TrimSpace(role))
-	if role == "" || role == "default" {
-		parsed, _ := agents.ParseThinkingLevel(h.cfg.ReasoningEffort)
-		for _, r := range concreteThinkingRoles {
-			resolved, ok := agents.ResolveThinkingForModel(h.models.ForRole(r), parsed)
-			if !ok || resolved != parsed {
-				h.cfg.ReasoningEffort = string(resolved)
-				return resolved
-			}
-		}
-		h.cfg.ReasoningEffort = string(parsed)
-		return parsed
-	}
-
-	_, hasRoleThinking := h.cfg.Roles[role]
-	hasRoleThinking = hasRoleThinking && h.cfg.Roles[role].ReasoningEffort != ""
+// resolveThinkingForRoleLocked 计算某角色实际生效的推理强度：取其原始意图
+// （ResolveReasoningEffort：角色级 → 顶层默认），再按该角色当前模型的能力钳制。
+// 钳制只发生在这条“生效路径”上，不回写配置——存储始终保留用户的原始意图。
+func (h *Host) resolveThinkingForRoleLocked(role string) agentcore.ThinkingLevel {
 	parsed, _ := agents.ParseThinkingLevel(h.cfg.ResolveReasoningEffort(role))
 	resolved, _ := agents.ResolveThinkingForModel(h.models.ForRole(role), parsed)
-	if !hasRoleThinking {
-		if resolved != parsed {
-			h.cfg.ReasoningEffort = string(resolved)
-		}
-		return resolved
-	}
-	if h.cfg.Roles == nil {
-		h.cfg.Roles = make(map[string]bootstrap.RoleConfig)
-	}
-	rc := h.cfg.Roles[role]
-	rc.ReasoningEffort = string(resolved)
-	h.cfg.Roles[role] = rc
 	return resolved
 }
 
+// applyThinkingLocked 把生效强度下发给 live agent；每个角色各按自己的模型钳制。
 func (h *Host) applyThinkingLocked(role string) {
 	if h.thinkingApplier == nil {
 		return
@@ -1304,13 +1280,11 @@ func (h *Host) applyThinkingLocked(role string) {
 	role = strings.ToLower(strings.TrimSpace(role))
 	if role == "" || role == "default" {
 		for _, r := range concreteThinkingRoles {
-			lv, _ := agents.ParseThinkingLevel(h.cfg.ResolveReasoningEffort(r))
-			h.thinkingApplier(r, lv)
+			h.thinkingApplier(r, h.resolveThinkingForRoleLocked(r))
 		}
 		return
 	}
-	lv, _ := agents.ParseThinkingLevel(h.cfg.ResolveReasoningEffort(role))
-	h.thinkingApplier(role, lv)
+	h.thinkingApplier(role, h.resolveThinkingForRoleLocked(role))
 }
 
 // SetRoleThinking 设置某角色（或 default）的推理强度：校验→持久化→联动 live agent→事件。
@@ -1324,17 +1298,7 @@ func (h *Host) SetRoleThinking(role, level string) error {
 		return err
 	}
 	role = strings.ToLower(strings.TrimSpace(role))
-	if role == "" || role == "default" {
-		for _, r := range concreteThinkingRoles {
-			if resolved, ok := agents.ResolveThinkingForModel(h.models.ForRole(r), parsed); !ok || resolved != parsed {
-				parsed = resolved
-				break
-			}
-		}
-	} else {
-		parsed, _ = agents.ResolveThinkingForModel(h.models.ForRole(role), parsed)
-	}
-	// 持久化：具体角色写 Roles[role].ReasoningEffort，default/"" 写顶层 ReasoningEffort。
+	// 存储保留原始意图：直接持久化用户选定的强度，钳制只在下发(applyThinkingLocked)时按模型能力发生。
 	if role == "" || role == "default" {
 		h.cfg.ReasoningEffort = string(parsed)
 	} else {

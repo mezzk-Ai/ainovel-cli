@@ -94,7 +94,10 @@ type modelSwitchState struct {
 	providers   []string
 	models      []host.ConfiguredModel
 	thinking    []thinkingOption
-	message     string
+	// initialThinkingKey 记录面板打开时该角色强度字段的初始选中值。仅当用户实际移动了
+	// 该字段才回写——存储的强度意图可能高于当前模型能力、面板无法呈现，不能因“没动”而误抹。
+	initialThinkingKey string
+	message            string
 }
 
 func newModelSwitchState(rt modelRuntime, roleHint string) *modelSwitchState {
@@ -241,6 +244,7 @@ func (s *modelSwitchState) syncModels(rt modelRuntime, preferred string) {
 func (s *modelSwitchState) syncThinking(rt modelRuntime) {
 	s.thinking = thinkingOptionsFor(rt, s.role())
 	s.thinkingIdx = thinkingIndexOf(s.thinking, rt.CurrentThinking(s.role()))
+	s.initialThinkingKey = s.thinkingKey()
 }
 
 func (s *modelSwitchState) apply(rt modelRuntime) error {
@@ -254,14 +258,14 @@ func (s *modelSwitchState) apply(rt modelRuntime) error {
 	if err := rt.SwitchModel(s.role(), s.provider(), s.model()); err != nil {
 		return err
 	}
-	s.syncThinking(rt)
-	// 推理强度与模型正交：仅当较当前值有变化时应用，避免冗余持久化/事件。
-	if wantThinking != strings.ToLower(strings.TrimSpace(rt.CurrentThinking(s.role()))) {
+	// 推理强度与模型正交：仅当用户实际移动了强度字段才回写，避免把面板无法呈现的
+	// 高意图（当前模型能力不足）误抹成初始默认值。
+	if wantThinking != s.initialThinkingKey {
 		if err := rt.SetRoleThinking(s.role(), wantThinking); err != nil {
 			return err
 		}
-		s.syncThinking(rt)
 	}
+	s.syncThinking(rt)
 	return nil
 }
 

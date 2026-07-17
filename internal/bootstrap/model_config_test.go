@@ -59,7 +59,7 @@ func TestResolveContextWindowIsProviderAware(t *testing.T) {
 	}
 }
 
-func TestSaveModelConfigPreservesOtherFieldsAndUsesPrivateMode(t *testing.T) {
+func TestSaveProviderConfigPreservesSelectionAndUsesPrivateMode(t *testing.T) {
 	path := filepath.Join(t.TempDir(), ".ainovel", "config.json")
 	original := Config{
 		Provider: "old", ModelName: "old-model", Style: "fantasy",
@@ -70,18 +70,22 @@ func TestSaveModelConfigPreservesOtherFieldsAndUsesPrivateMode(t *testing.T) {
 		t.Fatalf("seed: %v", err)
 	}
 	pc := ProviderConfig{Type: "openai", Models: []ModelConfig{{Name: "new-model", ContextWindow: 500000}}}
-	if err := SaveModelConfig(path, "new", pc, "new-model"); err != nil {
-		t.Fatalf("save model config: %v", err)
+	if err := SaveProviderConfig(path, "new", pc); err != nil {
+		t.Fatalf("save provider config: %v", err)
 	}
 	got, err := LoadConfigFile(path)
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if got.Style != "fantasy" || got.Budget.BookUSD != 20 || got.Provider != "new" || got.ModelName != "new-model" {
-		t.Fatalf("unrelated fields or selection lost: %#v", got)
+	// 只补 providers 段：无关字段与顶层 provider/model 选择必须原样保留。
+	if got.Style != "fantasy" || got.Budget.BookUSD != 20 || got.Provider != "old" || got.ModelName != "old-model" {
+		t.Fatalf("selection or unrelated fields mutated: %#v", got)
 	}
 	if _, ok := got.Providers["old"]; !ok {
 		t.Fatal("existing provider was removed")
+	}
+	if got.Providers["new"].Models[0].ContextWindow != 500000 {
+		t.Fatalf("new provider not patched in: %#v", got.Providers["new"])
 	}
 	// 权限断言只在有 POSIX 权限位语义的平台上有意义：Windows 把一切上报为
 	// 0666/0444，此断言在该平台恒假（参见 version.TestReplaceExecutable 同款处理）。

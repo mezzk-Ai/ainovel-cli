@@ -39,14 +39,14 @@ func (s ModelConfigurationSnapshot) ReferencesFor(provider, model string) []stri
 	return append([]string(nil), s.References[modelReferenceKey(provider, model)]...)
 }
 
-// ModelConfigurationDraft 是 /config 提交给 Host 的完整模型配置草稿。
+// ModelConfigurationDraft 是 /config 提交给 Host 的单个 provider 配置草稿。
+// 只描述该 provider 的定义（协议/凭证/模型库），不含“当前用哪个”——切换归 /model。
 type ModelConfigurationDraft struct {
 	Provider     string
 	Type         string
 	API          string
 	BaseURL      string
 	Models       []bootstrap.ModelConfig
-	DefaultModel string
 	APIKeyAction APIKeyAction
 	APIKey       string
 }
@@ -126,10 +126,12 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	draft.Type = strings.ToLower(strings.TrimSpace(draft.Type))
 	draft.API = strings.ToLower(strings.TrimSpace(draft.API))
 	draft.BaseURL = strings.TrimSpace(draft.BaseURL)
-	draft.DefaultModel = strings.TrimSpace(draft.DefaultModel)
 	draft.APIKey = strings.TrimSpace(draft.APIKey)
-	if draft.Provider == "" || draft.DefaultModel == "" {
-		return fmt.Errorf("provider 和默认模型不能为空")
+	if draft.Provider == "" {
+		return fmt.Errorf("provider 不能为空")
+	}
+	if len(draft.Models) == 0 {
+		return fmt.Errorf("请至少配置一个模型")
 	}
 
 	candidate := bootstrap.CloneConfig(h.cfg)
@@ -139,7 +141,6 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	pc.API = draft.API
 	pc.BaseURL = draft.BaseURL
 	configuredModels := make([]bootstrap.ModelConfig, 0, len(draft.Models))
-	defaultFound := false
 	seen := make(map[string]bool, len(draft.Models))
 	for _, model := range draft.Models {
 		model.Name = strings.TrimSpace(model.Name)
@@ -153,13 +154,9 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 			return fmt.Errorf("模型 %q 重复", model.Name)
 		}
 		seen[model.Name] = true
-		defaultFound = defaultFound || model.Name == draft.DefaultModel
 		configuredModels = append(configuredModels, model)
 	}
 	pc.Models = configuredModels
-	if !defaultFound {
-		return fmt.Errorf("默认模型 %q 必须保存在模型列表中", draft.DefaultModel)
-	}
 
 	switch draft.APIKeyAction {
 	case "", APIKeyKeep:
@@ -176,15 +173,14 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	for _, model := range pc.Models {
 		newNames[model.Name] = true
 	}
+	// 删除模型前先查引用：被顶层默认或任何角色/fallback 指向的模型不能删，
+	// 让用户先去 /model 切走——/config 不再代切默认。
 	for _, old := range oldModels {
 		if newNames[old.Name] {
 			continue
 		}
-		for _, ref := range h.modelReferencesLocked(draft.Provider, old.Name) {
-			if ref == "default" {
-				continue // 本次提交会把 default 原子切到 draft.DefaultModel。
-			}
-			return fmt.Errorf("模型 %q 仍被 %s 引用，不能删除", old.Name, ref)
+		if refs := h.modelReferencesLocked(draft.Provider, old.Name); len(refs) > 0 {
+			return fmt.Errorf("模型 %q 仍被 %s 引用，请先在 /model 切换后再删除", old.Name, strings.Join(refs, "、"))
 		}
 	}
 
@@ -192,8 +188,7 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 		candidate.Providers = make(map[string]bootstrap.ProviderConfig)
 	}
 	candidate.Providers[draft.Provider] = pc
-	candidate.Provider = draft.Provider
-	candidate.ModelName = draft.DefaultModel
+	// 顶层 provider/model 保持不变——“当前用哪个”由 /model 决定。
 	if err := candidate.ValidateBase(); err != nil {
 		return err
 	}
@@ -205,19 +200,18 @@ func (h *Host) ConfigureModels(draft ModelConfigurationDraft) error {
 	if h.configPath == "" {
 		return fmt.Errorf("无法定位配置文件路径")
 	}
-	if err := bootstrap.SaveModelConfig(h.configPath, draft.Provider, pc, draft.DefaultModel); err != nil {
+	if err := bootstrap.SaveProviderConfig(h.configPath, draft.Provider, pc); err != nil {
 		return fmt.Errorf("保存配置失败: %w", err)
 	}
 
 	h.models.ApplyPrepared(prepared)
 	h.cfg = candidate
-	h.normalizeThinkingLocked("default")
+	// 模型客户端被重建后重新下发推理强度：applyThinkingLocked 按各角色的新模型能力钳制生效值，
+	// 存储的强度意图保持不变。
 	h.applyThinkingLocked("default")
-	window, source := h.cfg.ResolveContextWindow(draft.Provider, draft.DefaultModel)
-	bootstrap.LogContextWindowChoice("default", draft.DefaultModel, window, source)
 	h.emitEvent(Event{
 		Time: time.Now(), Category: "SYSTEM", Level: "info",
-		Summary: fmt.Sprintf("模型配置已保存：%s/%s → %s", draft.Provider, draft.DefaultModel, h.configPath),
+		Summary: fmt.Sprintf("Provider 配置已保存：%s → %s", draft.Provider, h.configPath),
 	})
 	return nil
 }

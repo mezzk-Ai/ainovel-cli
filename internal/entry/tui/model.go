@@ -628,9 +628,6 @@ func (m Model) View() string {
 	if m.cocreate != nil {
 		return renderCoCreateModal(m.width, m.height, m.cocreate, errorText(m.err), m.textarea.View(), m.spinnerIdx, m.quitPending)
 	}
-	if m.modelConfig != nil {
-		return renderModelConfigModal(m.width, m.height, m.modelConfig)
-	}
 	if m.help != nil {
 		return renderHelpModal(m.width, m.height, m.help)
 	}
@@ -686,6 +683,8 @@ func (m Model) View() string {
 	if m.modelSwitch != nil {
 		commandBar := renderModelSwitchBar(m.width, m.modelSwitch)
 		view = overlayAboveInput(view, commandBar, inputH)
+	} else if m.modelConfig != nil {
+		view = overlayAboveInput(view, renderModelConfigModal(m.width, m.modelConfig), inputH)
 	} else if m.compActive {
 		commandBar := renderCommandPalette(m.width, m.compItems, m.compIdx)
 		view = overlayAboveInput(view, commandBar, inputH)
