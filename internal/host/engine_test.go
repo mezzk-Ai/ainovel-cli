@@ -173,7 +173,9 @@ func scriptedWriterModel() *scriptedChatModel {
 			return testToolCallMsg("commit_chapter", map[string]any{
 				"chapter": chapter, "summary": fmt.Sprintf("第%d章摘要", chapter),
 				"characters": []string{"主角"}, "key_events": []string{"推进"},
-				"hook_type": "crisis",
+				"timeline_events": []any{}, "foreshadow_updates": []any{},
+				"relationship_changes": []any{}, "state_changes": []any{}, "cast_intros": []any{},
+				"hook_type": "crisis", "dominant_strand": "quest", "feedback": nil,
 			})
 		}
 	}}
@@ -752,9 +754,12 @@ func TestEngine_PauseWithEditorDispatchWaitsForRewriteQueue(t *testing.T) {
 					{"dimension": "hook", "score": 85, "comment": "达标(引用:原文)"},
 					{"dimension": "aesthetic", "score": 55, "comment": "语气不符(引用:原文第一段)"},
 				},
-				"issues":  []map[string]any{{"severity": "major", "description": "语气", "evidence": "原文", "suggestion": "改冷"}},
+				"issues": []map[string]any{{
+					"type": "aesthetic", "severity": "error", "description": "语气", "evidence": "原文", "suggestion": "改冷",
+					"chapters": []int{1}, "requires_change": true,
+				}},
+				"contract_status": nil, "contract_misses": []string{}, "contract_notes": nil,
 				"verdict": "rewrite", "summary": "第1章语气需重写",
-				"affected_chapters": []int{1},
 			})
 		}
 		return testTextMsg("done")
@@ -781,7 +786,7 @@ func TestEngine_PauseWithEditorDispatchWaitsForRewriteQueue(t *testing.T) {
 	// 模拟 Arbiter 返工裁定:hold + dispatch editor(引擎未运行 → 立即应用)。
 	e.applyControlOp(context.Background(), controlOp{
 		hold:     &arbiter.AdvanceHoldOp{After: domain.AdvanceHoldAfterRewritesDrained, Reason: "重写第1章语气,改完暂停验收"},
-		dispatch: &arbiter.DispatchOp{Agent: "editor", Task: "复核第 1 章:语气改冷,save_review(verdict=rewrite, affected_chapters=[1])"},
+		dispatch: &arbiter.DispatchOp{Agent: "editor", Task: "复核第 1 章：语气改冷，用 issues[].chapters 与 requires_change 入队"},
 		facts:    mustInterventionFacts(t, st),
 	})
 	if !e.start(nil) {

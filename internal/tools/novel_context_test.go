@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -878,6 +879,46 @@ func TestContextToolOmitsRewriteBriefForNormalChapter(t *testing.T) {
 	}
 	if _, ok := payload["rewrite_brief"]; ok {
 		t.Fatal("expected no rewrite_brief for chapter outside PendingRewrites")
+	}
+}
+
+func TestContextToolLoadsArcReviewAffectingEarlierChapter(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.Init("arc brief", 4); err != nil {
+		t.Fatal(err)
+	}
+	for chapter := 1; chapter <= 4; chapter++ {
+		if err := s.Progress.MarkChapterComplete(chapter, 100, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.Progress.SetPendingRewrites([]int{3}, "弧评审返工"); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.World.SaveReview(domain.ReviewEntry{
+		Chapter: 4, Scope: "arc", Verdict: "polish", Summary: "第二弧节奏需压缩", AffectedChapters: []int{3},
+		Issues: []domain.ConsistencyIssue{{
+			Type: "pacing", Severity: "error", Description: "第3章铺垫过长", Evidence: "冲突迟到",
+			Chapters: []int{3}, RequiresChange: true,
+		}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	result, err := NewContextTool(s, References{}, "default").Execute(context.Background(), json.RawMessage(`{"chapter":3}`))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal(result, &payload); err != nil {
+		t.Fatal(err)
+	}
+	brief, _ := payload["rewrite_brief"].(map[string]any)
+	if brief == nil || !strings.Contains(fmt.Sprint(brief["review_summary"]), "第二弧") {
+		t.Fatalf("expected arc review handoff for chapter 3, got %#v", brief)
 	}
 }
 

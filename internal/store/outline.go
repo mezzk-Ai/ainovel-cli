@@ -146,6 +146,8 @@ type ArcBoundary struct {
 	IsVolumeEnd    bool
 	Volume         int
 	Arc            int
+	StartChapter   int
+	EndChapter     int
 	NextVolume     int
 	NextArc        int
 	NeedsExpansion bool
@@ -169,21 +171,24 @@ func (s *OutlineStore) CheckArcBoundary(chapter int) (*ArcBoundary, error) {
 		volume, arc    int
 		chInArc        int
 		arcLen         int
+		arcStart       int
 	}
 
 	ch := 1
 	var cur *arcPos
 	for vi, v := range volumes {
 		for ai, a := range v.Arcs {
+			arcStart := ch
 			for ci := range a.Chapters {
 				if ch == chapter {
 					cur = &arcPos{
-						volIdx:  vi,
-						arcIdx:  ai,
-						volume:  v.Index,
-						arc:     a.Index,
-						chInArc: ci,
-						arcLen:  len(a.Chapters),
+						volIdx:   vi,
+						arcIdx:   ai,
+						volume:   v.Index,
+						arc:      a.Index,
+						chInArc:  ci,
+						arcLen:   len(a.Chapters),
+						arcStart: arcStart,
 					}
 				}
 				ch++
@@ -195,8 +200,10 @@ func (s *OutlineStore) CheckArcBoundary(chapter int) (*ArcBoundary, error) {
 	}
 
 	b := &ArcBoundary{
-		Volume: cur.volume,
-		Arc:    cur.arc,
+		Volume:       cur.volume,
+		Arc:          cur.arc,
+		StartChapter: cur.arcStart,
+		EndChapter:   cur.arcStart + cur.arcLen - 1,
 	}
 
 	isLastChInArc := cur.chInArc == cur.arcLen-1
@@ -373,6 +380,23 @@ func (s *OutlineStore) LoadCompass() (*domain.StoryCompass, error) {
 		return nil, err
 	}
 	return &c, nil
+}
+
+// SaveFoundationAudit 保存 Architect 对当前基础设定版本的语义审查。
+func (s *OutlineStore) SaveFoundationAudit(a domain.FoundationAudit) error {
+	return s.io.WriteJSON("meta/foundation_audit.json", a)
+}
+
+// LoadFoundationAudit 读取最近一次基础设定语义审查。
+func (s *OutlineStore) LoadFoundationAudit() (*domain.FoundationAudit, error) {
+	var a domain.FoundationAudit
+	if err := s.io.ReadJSON("meta/foundation_audit.json", &a); err != nil {
+		if os.IsNotExist(err) {
+			return nil, nil
+		}
+		return nil, err
+	}
+	return &a, nil
 }
 
 func renderLayeredOutline(volumes []domain.VolumeOutline) string {

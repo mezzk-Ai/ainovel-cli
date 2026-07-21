@@ -124,6 +124,7 @@ func BuildWorkers(
 	architectTools := []agentcore.Tool{
 		contextTool,
 		tools.NewSaveFoundationTool(store),
+		tools.NewAuditFoundationTool(store),
 	}
 	writerTools := []agentcore.Tool{
 		contextTool,
@@ -202,8 +203,7 @@ func BuildWorkers(
 		CacheLastMessage:   "ephemeral",
 		PromptCacheKey:     cacheBase + "-architect_short",
 		StopAfterToolResult: func(toolName string, result json.RawMessage) bool {
-			r := decodeSaveFoundationResult(toolName, result)
-			return r.Type == "outline" && r.FoundationReady
+			return foundationReadyResult(toolName, result)
 		},
 		StopGuardFactory: architectStopGuardFactory,
 	}
@@ -339,6 +339,9 @@ func decodeSaveFoundationResult(toolName string, result json.RawMessage) saveFou
 }
 
 func architectLongShouldStopAfterToolResult(toolName string, result json.RawMessage) bool {
+	if foundationReadyResult(toolName, result) {
+		return true
+	}
 	r := decodeSaveFoundationResult(toolName, result)
 	switch r.Type {
 	case "expand_arc", "complete_book":
@@ -346,4 +349,14 @@ func architectLongShouldStopAfterToolResult(toolName string, result json.RawMess
 	default:
 		return false
 	}
+}
+
+func foundationReadyResult(toolName string, result json.RawMessage) bool {
+	if toolName != "audit_foundation" {
+		return false
+	}
+	var r struct {
+		FoundationReady bool `json:"foundation_ready"`
+	}
+	return json.Unmarshal(result, &r) == nil && r.FoundationReady
 }

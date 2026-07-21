@@ -10,11 +10,18 @@ import (
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/llmcontract"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
 func TestCommitChapterSchemaDescribesFeedbackAsObject(t *testing.T) {
 	tool := NewCommitChapterTool(store.NewStore(t.TempDir()))
+	if !tool.StrictSchema() {
+		t.Fatal("commit_chapter must use strict schema")
+	}
+	if err := llmcontract.ValidateStrictReady(tool.Schema()); err != nil {
+		t.Fatalf("commit_chapter schema is not strict-ready: %v", err)
+	}
 	schema := tool.Schema()
 	props, ok := schema["properties"].(map[string]any)
 	if !ok {
@@ -28,8 +35,46 @@ func TestCommitChapterSchemaDescribesFeedbackAsObject(t *testing.T) {
 	if !strings.Contains(desc, "JSON object") || !strings.Contains(desc, "字符串化 JSON") {
 		t.Fatalf("feedback description should warn against stringified JSON, got %q", desc)
 	}
-	if got := feedback["type"]; got != "object" {
-		t.Fatalf("feedback type = %v, want object", got)
+	if got := fmt.Sprint(feedback["type"]); got != "[object null]" {
+		t.Fatalf("feedback type = %v, want nullable object", feedback["type"])
+	}
+}
+
+func TestCommitChapterRejectsUnknownForeshadowReferenceBeforePending(t *testing.T) {
+	dir := t.TempDir()
+	s := store.NewStore(dir)
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1, "summary": "推进", "characters": []string{"主角"}, "key_events": []string{"发现线索"},
+		"foreshadow_updates": []map[string]any{{"id": "missing", "action": "resolve"}},
+	})
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "unknown id") {
+		t.Fatalf("expected unknown foreshadow rejection, got %v", err)
+	}
+	if pending, err := s.Signals.LoadPendingCommit(); err != nil || pending != nil {
+		t.Fatalf("invalid args must not create pending commit: pending=%+v err=%v", pending, err)
+	}
+}
+
+func TestCommitChapterRejectsInvalidNestedFields(t *testing.T) {
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.Init("test", 1); err != nil {
+		t.Fatal(err)
+	}
+	args, _ := json.Marshal(map[string]any{
+		"chapter": 1, "summary": "推进", "characters": []string{"主角"}, "key_events": []string{"发现线索"},
+		"relationship_changes": []map[string]any{{"character_a": "主角", "character_b": "", "relation": "敌对"}},
+	})
+	if _, err := NewCommitChapterTool(s).Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "relationship_changes[0]") {
+		t.Fatalf("expected nested field rejection, got %v", err)
 	}
 }
 

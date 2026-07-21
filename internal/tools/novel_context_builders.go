@@ -271,17 +271,44 @@ func (t *ContextTool) prepareChapterContext(chapter int, envelope *chapterContex
 	// 正文不在此注入——保持"正文按需 read_chapter 拉"的约定不破。
 	if isRewrite {
 		brief := map[string]any{"reason": progress.RewriteReason}
-		if review, reviewErr := t.store.World.LoadReview(chapter); reviewErr == nil && review != nil {
-			if review.Summary != "" {
-				brief["review_summary"] = review.Summary
+		if reviews, reviewErr := t.store.World.LoadReviewsAffectingChapter(chapter); reviewErr == nil {
+			var sources []map[string]any
+			for _, review := range reviews {
+				item := map[string]any{
+					"review_chapter": review.Chapter,
+					"scope":          review.Scope,
+					"summary":        review.Summary,
+				}
+				var issues []domain.ConsistencyIssue
+				for _, issue := range review.Issues {
+					// 新评审按问题到章节的映射精准下发；旧评审没有映射时保留
+					// 全部问题，避免历史返工理由在升级后消失。
+					if len(issue.Chapters) == 0 || (issue.RequiresChange && slices.Contains(issue.Chapters, chapter)) {
+						issues = append(issues, issue)
+					}
+				}
+				if len(issues) > 0 {
+					item["issues"] = issues
+				}
+				if review.Scope == "chapter" && len(review.ContractMisses) > 0 {
+					item["contract_misses"] = review.ContractMisses
+				}
+				sources = append(sources, item)
 			}
-			if len(review.Issues) > 0 {
-				brief["issues"] = review.Issues
+			if len(sources) > 0 {
+				brief["reviews"] = sources
+				// 单来源保留旧字段，避免已存在的上下文消费者升级时丢失信息。
+				if len(sources) == 1 {
+					brief["review_summary"] = sources[0]["summary"]
+					if issues, ok := sources[0]["issues"]; ok {
+						brief["issues"] = issues
+					}
+					if misses, ok := sources[0]["contract_misses"]; ok {
+						brief["contract_misses"] = misses
+					}
+				}
 			}
-			if len(review.ContractMisses) > 0 {
-				brief["contract_misses"] = review.ContractMisses
-			}
-		} else if reviewErr != nil {
+		} else {
 			warn("rewrite_review", reviewErr)
 		}
 		envelope.Working["rewrite_brief"] = brief

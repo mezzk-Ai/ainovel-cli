@@ -345,8 +345,8 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 		t.recordVolumeEndDecision(a.Type, a.Reason, volumeEndFacts, result)
 	}
 
-	// 返回剩余未完成项，引导 Architect 继续或结束；
-	// 齐全时一次性把 phase 推进到 writing，下一 Engine 轮次可直接进入写作。
+	// 返回剩余未完成项。初始工件齐全后仍会剩 foundation_audit；只有
+	// audit_foundation 对实际落盘版本给出 ready=true，才允许进入 writing。
 	remaining, err := t.store.FoundationMissing()
 	if err != nil {
 		return nil, fmt.Errorf("load foundation state: %w: %w", errs.ErrStoreRead, err)
@@ -354,19 +354,6 @@ func (t *SaveFoundationTool) Execute(_ context.Context, args json.RawMessage) (j
 	ready := len(remaining) == 0
 	result["remaining"] = remaining
 	result["foundation_ready"] = ready
-	if ready {
-		p, err := t.store.Progress.Load()
-		if err != nil {
-			return nil, fmt.Errorf("load progress: %w: %w", errs.ErrStoreRead, err)
-		}
-		if p != nil &&
-			p.Phase != domain.PhaseWriting && p.Phase != domain.PhaseComplete {
-			if err := t.store.Progress.UpdatePhase(domain.PhaseWriting); err != nil {
-				return nil, fmt.Errorf("update writing phase: %w: %w", errs.ErrStoreWrite, err)
-			}
-			result["phase"] = string(domain.PhaseWriting)
-		}
-	}
 	return json.Marshal(result)
 }
 

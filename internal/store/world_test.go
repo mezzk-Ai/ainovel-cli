@@ -157,6 +157,23 @@ func TestForeshadow_UpdateLifecycle(t *testing.T) {
 	}
 }
 
+func TestForeshadow_RejectsUnknownAndInvalidOperations(t *testing.T) {
+	s := newTestStore(t)
+	for _, update := range []domain.ForeshadowUpdate{
+		{ID: "missing", Action: "advance"},
+		{ID: "missing", Action: "resolve"},
+		{ID: "f1", Action: "unknown"},
+		{ID: "f1", Action: "plant"},
+	} {
+		if err := s.World.UpdateForeshadow(1, []domain.ForeshadowUpdate{update}); err == nil {
+			t.Fatalf("expected rejection for %+v", update)
+		}
+	}
+	if ledger, err := s.World.LoadForeshadowLedger(); err != nil || len(ledger) != 0 {
+		t.Fatalf("invalid operations must not mutate ledger: %+v err=%v", ledger, err)
+	}
+}
+
 func TestForeshadow_PlantIsIdempotent(t *testing.T) {
 	s := newTestStore(t)
 

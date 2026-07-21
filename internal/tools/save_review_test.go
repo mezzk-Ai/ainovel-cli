@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/llmcontract"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -25,17 +27,25 @@ func TestSaveReviewPersistsContractAssessment(t *testing.T) {
 	}
 
 	tool := NewSaveReviewTool(s)
+	if !tool.StrictSchema() {
+		t.Fatal("save_review must use strict schema")
+	}
+	if err := llmcontract.ValidateStrictReady(tool.Schema()); err != nil {
+		t.Fatalf("save_review schema is not strict-ready: %v", err)
+	}
 	args, err := json.Marshal(map[string]any{
-		"chapter":           3,
-		"scope":             "chapter",
-		"dimensions":        []map[string]any{{"dimension": "consistency", "score": 85, "verdict": "pass", "comment": "基本一致"}, {"dimension": "character", "score": 82, "verdict": "pass", "comment": "人设稳定"}, {"dimension": "pacing", "score": 78, "verdict": "warning", "comment": "略慢"}, {"dimension": "continuity", "score": 84, "verdict": "pass", "comment": "连贯"}, {"dimension": "foreshadow", "score": 80, "verdict": "pass", "comment": "正常"}, {"dimension": "hook", "score": 76, "verdict": "warning", "comment": "钩子一般"}, {"dimension": "aesthetic", "score": 81, "verdict": "pass", "comment": "语言基本成立"}},
-		"issues":            []map[string]any{},
-		"contract_status":   "partial",
-		"contract_misses":   []string{"未明确埋下内门试炼邀请"},
-		"contract_notes":    "主线推进达成，但 contract 中的第二个推进项没有落地。",
-		"verdict":           "polish",
-		"summary":           "本章基本完成目标，但 contract 仍有漏项。",
-		"affected_chapters": []int{3},
+		"chapter":    3,
+		"scope":      "chapter",
+		"dimensions": []map[string]any{{"dimension": "consistency", "score": 85, "verdict": "pass", "comment": "基本一致"}, {"dimension": "character", "score": 82, "verdict": "pass", "comment": "人设稳定"}, {"dimension": "pacing", "score": 78, "verdict": "warning", "comment": "略慢"}, {"dimension": "continuity", "score": 84, "verdict": "pass", "comment": "连贯"}, {"dimension": "foreshadow", "score": 80, "verdict": "pass", "comment": "正常"}, {"dimension": "hook", "score": 76, "verdict": "warning", "comment": "钩子一般"}, {"dimension": "aesthetic", "score": 81, "verdict": "pass", "comment": "语言基本成立"}},
+		"issues": []map[string]any{{
+			"type": "contract", "severity": "error", "description": "契约漏项", "evidence": "未出现试炼邀请",
+			"suggestion": "补入邀请", "chapters": []int{3}, "requires_change": true,
+		}},
+		"contract_status": "partial",
+		"contract_misses": []string{"未明确埋下内门试炼邀请"},
+		"contract_notes":  "主线推进达成，但 contract 中的第二个推进项没有落地。",
+		"verdict":         "polish",
+		"summary":         "本章基本完成目标，但 contract 仍有漏项。",
 	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -131,7 +141,7 @@ func TestSaveReviewRejectsDimensionWithoutComment(t *testing.T) {
 	}
 }
 
-func TestSaveReviewRejectsUnfinishedAffectedChapter(t *testing.T) {
+func TestSaveReviewRejectsIssueOutsideChapterScope(t *testing.T) {
 	s := store.NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -158,20 +168,22 @@ func TestSaveReviewRejectsUnfinishedAffectedChapter(t *testing.T) {
 			{"dimension": "hook", "score": 76, "comment": "钩子一般"},
 			{"dimension": "aesthetic", "score": 81, "comment": "语言基本成立"},
 		},
-		"issues":            []map[string]any{},
-		"contract_status":   "partial",
-		"verdict":           "polish",
-		"summary":           "需要打磨第 58 章，不能把未完成章节入队。",
-		"affected_chapters": []int{65},
-		"contract_misses":   []string{"节奏超出本章职责"},
-		"contract_notes":    "应只处理已完成章节。",
+		"issues": []map[string]any{{
+			"type": "pacing", "severity": "error", "description": "节奏问题", "evidence": "第65章",
+			"suggestion": "调整", "chapters": []int{65}, "requires_change": true,
+		}},
+		"contract_status": "partial",
+		"verdict":         "polish",
+		"summary":         "需要打磨第 58 章，不能把未完成章节入队。",
+		"contract_misses": []string{"节奏超出本章职责"},
+		"contract_notes":  "应只处理已完成章节。",
 	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "pending_rewrites 只能包含已完成章节") {
-		t.Fatalf("expected unfinished affected chapter rejection, got %v", err)
+	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "must reference chapter 58") {
+		t.Fatalf("expected out-of-scope affected chapter rejection, got %v", err)
 	}
 	review, err := s.World.LoadReview(58)
 	if err != nil {
@@ -231,7 +243,7 @@ func TestSaveReviewKeepsModelDefinedDimension(t *testing.T) {
 	}
 }
 
-func TestSaveReviewRejectsMissingAffectedChaptersForRewrite(t *testing.T) {
+func TestSaveReviewRejectsRewriteWithoutActionableIssue(t *testing.T) {
 	s := store.NewStore(t.TempDir())
 	if err := s.Init(); err != nil {
 		t.Fatalf("Init: %v", err)
@@ -258,8 +270,8 @@ func TestSaveReviewRejectsMissingAffectedChaptersForRewrite(t *testing.T) {
 		t.Fatalf("Marshal: %v", err)
 	}
 
-	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "affected_chapters is required") {
-		t.Fatalf("expected affected_chapters validation error, got %v", err)
+	if _, err := tool.Execute(context.Background(), args); err == nil || !strings.Contains(err.Error(), "requires at least one issue") {
+		t.Fatalf("expected actionable issue validation error, got %v", err)
 	}
 }
 
@@ -285,9 +297,8 @@ func TestSaveReviewRejectsIssueWithoutEvidence(t *testing.T) {
 		"issues": []map[string]any{
 			{"type": "hook", "severity": "warning", "description": "章末钩子偏弱"},
 		},
-		"verdict":           "polish",
-		"summary":           "需要补强钩子。",
-		"affected_chapters": []int{3},
+		"verdict": "polish",
+		"summary": "需要补强钩子。",
 	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -335,13 +346,15 @@ func TestSaveReviewDoesNotDirtyQueueOnIllegalFlowTransition(t *testing.T) {
 			{"dimension": "hook", "score": 76, "verdict": "warning", "comment": "钩子一般"},
 			{"dimension": "aesthetic", "score": 81, "verdict": "pass", "comment": "语言基本成立"},
 		},
-		"issues":            []map[string]any{},
-		"contract_status":   "partial",
-		"contract_misses":   []string{"漏项"},
-		"contract_notes":    "复审仍有漏项。",
-		"verdict":           "polish",
-		"summary":           "复审第 8 章需打磨。",
-		"affected_chapters": []int{8},
+		"issues": []map[string]any{{
+			"type": "contract", "severity": "error", "description": "漏项", "evidence": "契约未完成",
+			"suggestion": "补齐", "chapters": []int{8}, "requires_change": true,
+		}},
+		"contract_status": "partial",
+		"contract_misses": []string{"漏项"},
+		"contract_notes":  "复审仍有漏项。",
+		"verdict":         "polish",
+		"summary":         "复审第 8 章需打磨。",
 	})
 	if err != nil {
 		t.Fatalf("Marshal: %v", err)
@@ -379,7 +392,10 @@ func TestSaveReviewKeepsOutcomeWhenReviewArtifactWriteFails(t *testing.T) {
 
 	args, err := json.Marshal(map[string]any{
 		"chapter": 3, "scope": "chapter", "verdict": "polish", "summary": "需要补足衔接",
-		"affected_chapters": []int{3}, "issues": []map[string]any{},
+		"issues": []map[string]any{{
+			"type": "continuity", "severity": "error", "description": "衔接不足", "evidence": "开篇缺少承接",
+			"suggestion": "补足衔接", "chapters": []int{3}, "requires_change": true,
+		}},
 		"dimensions": []map[string]any{
 			{"dimension": "consistency", "score": 85, "comment": "一致"},
 			{"dimension": "character", "score": 82, "comment": "稳定"},
@@ -403,5 +419,86 @@ func TestSaveReviewKeepsOutcomeWhenReviewArtifactWriteFails(t *testing.T) {
 	}
 	if p.Flow != domain.FlowPolishing || len(p.PendingRewrites) != 1 || p.PendingRewrites[0] != 3 {
 		t.Fatalf("审阅工件失败后返工意图必须保持可恢复，got flow=%s queue=%v", p.Flow, p.PendingRewrites)
+	}
+}
+
+func setupArcReviewStore(t *testing.T) *store.Store {
+	t.Helper()
+	s := store.NewStore(t.TempDir())
+	if err := s.Init(); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.Init("arc", 4); err != nil {
+		t.Fatal(err)
+	}
+	volumes := []domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Chapters: []domain.OutlineEntry{{Title: "一"}, {Title: "二"}}},
+			{Index: 2, Chapters: []domain.OutlineEntry{{Title: "三"}, {Title: "四"}}},
+		},
+	}}
+	if err := s.Outline.SaveLayeredOutline(volumes); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Outline.SaveOutline(domain.FlattenOutline(volumes)); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.Progress.SetLayered(true); err != nil {
+		t.Fatal(err)
+	}
+	for chapter := 1; chapter <= 4; chapter++ {
+		if err := s.Progress.MarkChapterComplete(chapter, 100, "", ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	return s
+}
+
+func arcReviewArgs(t *testing.T, issueChapter int) []byte {
+	t.Helper()
+	args, err := json.Marshal(map[string]any{
+		"chapter": 4,
+		"scope":   "arc",
+		"dimensions": []map[string]any{{
+			"dimension": "pacing", "score": 70, "comment": "第三章节奏拖沓",
+		}},
+		"issues": []map[string]any{{
+			"type": "pacing", "severity": "error", "description": "冲突进入过晚", "evidence": "第3章前半没有推进",
+			"suggestion": "压缩铺垫", "chapters": []int{issueChapter}, "requires_change": true,
+		}},
+		"verdict": "polish",
+		"summary": "第二弧需要压缩一处铺垫",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	return args
+}
+
+func TestSaveReviewRejectsIssueOutsideArcSpan(t *testing.T) {
+	s := setupArcReviewStore(t)
+	if _, err := NewSaveReviewTool(s).Execute(context.Background(), arcReviewArgs(t, 2)); err == nil || !strings.Contains(err.Error(), "outside 3-4") {
+		t.Fatalf("expected arc range rejection, got %v", err)
+	}
+	if p, _ := s.Progress.Load(); len(p.PendingRewrites) != 0 {
+		t.Fatalf("invalid review must not enqueue rewrites: %v", p.PendingRewrites)
+	}
+}
+
+func TestSaveReviewDerivesAffectedChaptersFromIssues(t *testing.T) {
+	s := setupArcReviewStore(t)
+	if _, err := NewSaveReviewTool(s).Execute(context.Background(), arcReviewArgs(t, 3)); err != nil {
+		t.Fatalf("Execute: %v", err)
+	}
+	review, err := s.World.LoadReview(4)
+	if err != nil || review == nil {
+		t.Fatalf("LoadReview: %v", err)
+	}
+	if !slices.Equal(review.AffectedChapters, []int{3}) {
+		t.Fatalf("affected chapters must be derived from issues, got %v", review.AffectedChapters)
+	}
+	if p, _ := s.Progress.Load(); !slices.Equal(p.PendingRewrites, []int{3}) {
+		t.Fatalf("rewrite queue = %v, want [3]", p.PendingRewrites)
 	}
 }

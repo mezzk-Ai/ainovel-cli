@@ -4,12 +4,14 @@
 
 - **novel_context**: 获取参考模板和当前状态。优先查看 `planning_memory`、`foundation_memory`、`reference_pack` 和 `memory_policy`，再按需读取兼容字段。`working_memory.user_rules` 是用户对本书的长期偏好（`structured` 机械约束 + `preferences` 自然语言偏好），规划时一并遵守，与参考模板冲突时用户要求优先。
 - **save_foundation**: 保存基础设定
+- **audit_foundation**: 对重新读取的已落盘基础设定做跨文件语义审查
 
 ## 硬约束
 
 - **保存必须通过工具调用**：premise / outline / characters / world_rules 都必须以 `save_foundation(...)` 调用完成。只把 Markdown/JSON 作为文字输出 = 数据没落盘。
-- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → outline。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。
-- **工具成功即结束**：`foundation_ready=true` 后直接结束本轮，不要再输出规划内容的文字总结。
+- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → outline → characters → world_rules。工件齐全后 `remaining` 会只剩 `foundation_audit`；此时重新调用 `novel_context`，逐项核对 premise / outline / characters / world_rules 的人物、目标、规则和结局是否一致，再把 `foundation_status.fingerprint` 原样传给 `audit_foundation`。
+- **发现冲突就修正**：`audit_foundation(ready=false)` 后按 issues 修改对应工件，再次调用 `novel_context` 获取新 fingerprint 并重新审查；不要用解释代替落盘修正。
+- **审查通过即结束**：只有 `audit_foundation` 返回 `foundation_ready=true` 才结束本轮，不要再输出规划内容的文字总结。
 
 ## 适用范围
 
@@ -138,4 +140,4 @@
 - 短篇最重要的是集中与收束
 - 不要预埋大量未来再说的线
 - 不要把短篇写成”长篇开头”
-- 按 premise → outline → characters → world_rules 顺序完成；`remaining` 非空时不要停。
+- 按 premise → outline → characters → world_rules → foundation_audit 顺序完成；`remaining` 非空时不要停。

@@ -17,12 +17,6 @@ import (
 // analysisSchemaVersion 是逐章事实 schema 版本，纳入 InputDigest。
 const analysisSchemaVersion = 2
 
-// validHookTypes / validStrands 与 commit_chapter schema 保持一致。
-var (
-	validHookTypes = map[string]bool{"crisis": true, "mystery": true, "desire": true, "emotion": true, "choice": true}
-	validStrands   = map[string]bool{"quest": true, "fire": true, "constellation": true}
-)
-
 // ImportedCharacterFact / ImportedWorldFact 是用于全书综合的紧凑观察，不直接写正式角色或世界规则。
 // 至少携带章节号，使综合结果有稳定来源（RFC §9.1）。
 type ImportedCharacterFact struct {
@@ -264,10 +258,10 @@ func validateBatch(r *AnalysisBatchResult, seg *Segmentation, start, end int) er
 		if strings.TrimSpace(f.Summary) == "" || strings.TrimSpace(f.CoreEvent) == "" {
 			return fmt.Errorf("章 %d summary/core_event 不能为空", f.Chapter)
 		}
-		if !validHookTypes[strings.ToLower(f.HookType)] {
+		if !domain.ValidHookType(strings.ToLower(f.HookType)) {
 			return fmt.Errorf("章 %d hook_type 非法：%q", f.Chapter, f.HookType)
 		}
-		if !validStrands[strings.ToLower(f.DominantStrand)] {
+		if !domain.ValidDominantStrand(strings.ToLower(f.DominantStrand)) {
 			return fmt.Errorf("章 %d dominant_strand 非法：%q", f.Chapter, f.DominantStrand)
 		}
 		for j, fu := range f.ForeshadowUpdates {

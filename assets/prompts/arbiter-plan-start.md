@@ -9,4 +9,4 @@
 
 - 以用户需求为主体，转述完整，不要遗漏用户的显式要求（题材、篇幅、人设、禁忌等）。
 - 若用户输入 < 20 字，在 task 里自主补充：差异化方向、目标读者与核心消费点、至少一个非常规故事钩子。补充是给规划师的创作方向，不是替用户改需求——用户显式要求永远优先。
-- task 结尾注明：「用 save_foundation 逐项落盘前提/大纲/角色/世界规则，工具返回 foundation_ready=true 后直接结束（不要调用 complete_book——那是全书章节写完后的完结宣告）」。
+- task 结尾注明：「用 save_foundation 逐项落盘前提/大纲/角色/世界规则，全部齐全后重新调用 novel_context 并用 audit_foundation 审查跨文件语义一致性；仅 audit_foundation 返回 foundation_ready=true 后结束（不要调用 complete_book——那是全书章节写完后的完结宣告）」。

@@ -94,9 +94,13 @@ func Route(s State) *Instruction {
 	//    尚未落盘任何设定（选型是语义判断），由 Engine 的 planStartFallback 补裁。
 	if p.Phase != domain.PhaseWriting {
 		if len(s.FoundationMissing) > 0 && s.PlanningTier != "" {
+			task := fmt.Sprintf("补齐基础设定缺项：%s（用 save_foundation 落盘对应 type）", strings.Join(s.FoundationMissing, "、"))
+			if len(s.FoundationMissing) == 1 && s.FoundationMissing[0] == "foundation_audit" {
+				task = "基础设定已齐全：重新调用 novel_context 读取全部已落盘工件与 foundation_status.fingerprint，审查跨文件语义一致性后调用 audit_foundation；有问题先修正并重新审查"
+			}
 			return &Instruction{
 				Agent:  plannerForTier(s.PlanningTier),
-				Task:   fmt.Sprintf("补齐基础设定缺项：%s（用 save_foundation 落盘对应 type，全部就绪后 foundation_ready=true）", strings.Join(s.FoundationMissing, "、")),
+				Task:   task,
 				Reason: "基础设定缺项未齐，照缺项续派同一规划师",
 			}
 		}
@@ -137,8 +141,11 @@ func Route(s State) *Instruction {
 		switch {
 		case !s.HasArcReview:
 			return &Instruction{
-				Agent:  "editor",
-				Task:   fmt.Sprintf("对第 %d 卷第 %d 弧做弧级评审（scope=arc）", b.Volume, b.Arc),
+				Agent: "editor",
+				Task: fmt.Sprintf(
+					"对第 %d 卷第 %d 弧（第 %d-%d 章）做弧级评审：调用 novel_context(chapter=%d)，save_review 使用 scope=arc、chapter=%d；issues[].chapters 只能落在该区间",
+					b.Volume, b.Arc, b.StartChapter, b.EndChapter, b.EndChapter, b.EndChapter,
+				),
 				Reason: "弧末评审未完成",
 			}
 		case !s.HasArcSummary:

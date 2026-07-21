@@ -14,6 +14,7 @@ import (
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/errs"
+	"github.com/voocel/ainovel-cli/internal/llmcontract"
 	"github.com/voocel/ainovel-cli/internal/rules"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
@@ -61,17 +62,18 @@ func (t *CommitChapterTool) Label() string { return "提交章节" }
 // 写工具（跨域可恢复 Saga：完整载荷→终稿/状态→进度→checkpoint），禁止并发。
 func (t *CommitChapterTool) ReadOnly(_ json.RawMessage) bool        { return false }
 func (t *CommitChapterTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
+func (t *CommitChapterTool) StrictSchema() bool                     { return true }
 
 func (t *CommitChapterTool) Schema() map[string]any {
 	timelineSchema := schema.Object(
 		schema.Property("time", schema.String("故事内时间")).Required(),
 		schema.Property("event", schema.String("事件描述")).Required(),
-		schema.Property("characters", schema.Array("涉及角色", schema.String(""))),
+		schema.Property("characters", schema.Array("涉及角色；无则为空数组", schema.String(""))).Required(),
 	)
 	foreshadowSchema := schema.Object(
 		schema.Property("id", schema.String("伏笔 ID")).Required(),
 		schema.Property("action", schema.Enum("操作", "plant", "advance", "resolve")).Required(),
-		schema.Property("description", schema.String("伏笔描述（仅 plant 时必需）")),
+		schema.Property("description", llmcontract.Nullable(schema.String("伏笔描述；非 plant 时为 null"))).Required(),
 	)
 	relationshipSchema := schema.Object(
 		schema.Property("character_a", schema.String("角色 A")).Required(),
@@ -81,9 +83,9 @@ func (t *CommitChapterTool) Schema() map[string]any {
 	stateChangeSchema := schema.Object(
 		schema.Property("entity", schema.String("角色名或实体名")).Required(),
 		schema.Property("field", schema.String("变化属性")).Required(),
-		schema.Property("old_value", schema.String("变化前的值")),
+		schema.Property("old_value", llmcontract.Nullable(schema.String("变化前的值；未知时为 null"))).Required(),
 		schema.Property("new_value", schema.String("变化后的值")).Required(),
-		schema.Property("reason", schema.String("变化原因")),
+		schema.Property("reason", llmcontract.Nullable(schema.String("变化原因；无需说明时为 null"))).Required(),
 	)
 	feedbackSchema := schema.Object(
 		schema.Property("deviation", schema.String("偏离大纲的描述")).Required(),
@@ -95,17 +97,17 @@ func (t *CommitChapterTool) Schema() map[string]any {
 		schema.Property("summary", schema.String("本章内容摘要（200字以内）")).Required(),
 		schema.Property("characters", schema.Array("本章出场角色名", schema.String(""))).Required(),
 		schema.Property("key_events", schema.Array("本章关键事件", schema.String(""))).Required(),
-		schema.Property("timeline_events", schema.Array("本章时间线事件", timelineSchema)),
-		schema.Property("foreshadow_updates", schema.Array("伏笔操作", foreshadowSchema)),
-		schema.Property("relationship_changes", schema.Array("关系变化", relationshipSchema)),
-		schema.Property("state_changes", schema.Array("角色/实体状态变化", stateChangeSchema)),
+		schema.Property("timeline_events", schema.Array("本章时间线事件；无则为空数组", timelineSchema)).Required(),
+		schema.Property("foreshadow_updates", schema.Array("伏笔操作；无则为空数组", foreshadowSchema)).Required(),
+		schema.Property("relationship_changes", schema.Array("关系变化；无则为空数组", relationshipSchema)).Required(),
+		schema.Property("state_changes", schema.Array("角色/实体状态变化；无则为空数组", stateChangeSchema)).Required(),
 		schema.Property("cast_intros", schema.Array("本章首次引入且后续可能再出现的次要角色简介（不含主角及 characters.json 已有角色）", schema.Object(
 			schema.Property("name", schema.String("角色名")).Required(),
 			schema.Property("brief_role", schema.String("一句话定位（如：客栈老板/赌坊打手）")).Required(),
-		))),
-		schema.Property("hook_type", schema.Enum("章末钩子类型", "crisis", "mystery", "desire", "emotion", "choice")),
-		schema.Property("dominant_strand", schema.Enum("本章主导叙事线", "quest", "fire", "constellation")),
-		schema.Property("feedback", feedbackSchema),
+		))).Required(),
+		schema.Property("hook_type", llmcontract.Nullable(schema.Enum("章末钩子类型；无明确类型时为 null", domain.HookTypes()...))).Required(),
+		schema.Property("dominant_strand", llmcontract.Nullable(schema.Enum("本章主导叙事线；无明确主线时为 null", domain.DominantStrands()...))).Required(),
+		schema.Property("feedback", llmcontract.Nullable(feedbackSchema)).Required(),
 	)
 }
 
@@ -159,6 +161,11 @@ func (t *CommitChapterTool) Execute(_ context.Context, args json.RawMessage) (js
 			return nil, fmt.Errorf("pending commit 已到 %s，但 progress 未标记第 %d 章完成: %w", existingPending.Stage, a.Chapter, errs.ErrToolConflict)
 		}
 		return t.finishPendingCommit(*existingPending, progress)
+	}
+	if existingPending == nil || existingPending.Stage == domain.CommitStageStarted {
+		if err := t.validateCommitArgs(a); err != nil {
+			return nil, err
+		}
 	}
 
 	if existingPending != nil && existingPending.Rewrite {

@@ -4,12 +4,14 @@
 
 - **novel_context**: 获取参考模板和当前状态。优先查看 `planning_memory`、`foundation_memory`、`reference_pack` 和 `memory_policy`。`working_memory.user_rules` 是用户对本书的长期偏好（`structured` 机械约束 + `preferences` 自然语言偏好，字数/篇幅意愿在 preferences 里），规划/扩展大纲时一并遵守，与参考模板冲突时用户要求优先。
 - **save_foundation**: 保存基础设定。
+- **audit_foundation**: 对重新读取的已落盘基础设定做跨文件语义审查。
 
 ## 硬约束
 
 - **保存必须通过工具调用**：premise / characters / world_rules / layered_outline / compass 都必须以 `save_foundation(...)` 调用完成。只把 Markdown/JSON 作为文字输出 = 数据没落盘。
-- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → layered_outline → compass。每次落盘后读返回的 `remaining`，非空就继续下一项，直到 `foundation_ready=true` 再结束。不要每项单独起 run。
-- **工具成功即结束**：`foundation_ready=true` 后直接结束本轮，不要再输出规划内容的文字总结。
+- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → layered_outline → compass。工件齐全后 `remaining` 会只剩 `foundation_audit`；此时重新调用 `novel_context`，逐项核对 premise / layered_outline / characters / world_rules / compass 的人物、势力、规则、长线和终局方向，再把 `foundation_status.fingerprint` 原样传给 `audit_foundation`。不要每项单独起 run。
+- **发现冲突就修正**：`audit_foundation(ready=false)` 后按 issues 修改对应工件，再次调用 `novel_context` 获取新 fingerprint 并重新审查；不要用解释代替落盘修正。
+- **审查通过即结束**：只有 `audit_foundation` 返回 `foundation_ready=true` 才结束本轮，不要再输出规划内容的文字总结。
 
 ## 初始规划（5 步，按顺序）
 
@@ -211,4 +213,4 @@ JSON 数组，每条含：category、rule、boundary。
 ## 注意事项
 
 - 长篇的核心是可持续展开，不是简单变长。不要过早透支高潮和谜底，不要把同一种爽点复制到每卷，不要让中后期只是前期放大版。
-- 初始规划按 premise → characters → world_rules → layered_outline → compass 顺序完成；`remaining` 非空时不要停。
+- 初始规划按 premise → characters → world_rules → layered_outline → compass → foundation_audit 顺序完成；`remaining` 非空时不要停。

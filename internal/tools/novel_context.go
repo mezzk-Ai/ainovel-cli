@@ -455,6 +455,18 @@ func (t *ContextTool) foundationStatus() (map[string]any, error) {
 	if len(missing) > 0 {
 		status["missing"] = missing
 	}
+	if len(missing) == 1 && missing[0] == "foundation_audit" {
+		fingerprint, err := t.store.FoundationFingerprint()
+		if err != nil {
+			return nil, err
+		}
+		status["fingerprint"] = fingerprint
+	}
+	if audit, err := t.store.Outline.LoadFoundationAudit(); err != nil {
+		return nil, err
+	} else if audit != nil && !audit.Ready {
+		status["last_audit"] = audit
+	}
 	return status, nil
 }
 

@@ -125,8 +125,14 @@ func (s *WorldStore) UpdateForeshadow(chapter int, updates []domain.ForeshadowUp
 			idx[e.ID] = i
 		}
 		for _, u := range updates {
+			if strings.TrimSpace(u.ID) == "" {
+				return fmt.Errorf("foreshadow id 不能为空")
+			}
 			switch u.Action {
 			case "plant":
+				if strings.TrimSpace(u.Description) == "" {
+					return fmt.Errorf("plant foreshadow %q requires description", u.ID)
+				}
 				if i, ok := idx[u.ID]; ok {
 					if entries[i].Description == "" {
 						entries[i].Description = u.Description
@@ -149,12 +155,18 @@ func (s *WorldStore) UpdateForeshadow(chapter int, updates []domain.ForeshadowUp
 			case "advance":
 				if i, ok := idx[u.ID]; ok {
 					entries[i].Status = "advanced"
+				} else {
+					return fmt.Errorf("advance unknown foreshadow %q", u.ID)
 				}
 			case "resolve":
 				if i, ok := idx[u.ID]; ok {
 					entries[i].Status = "resolved"
 					entries[i].ResolvedAt = chapter
+				} else {
+					return fmt.Errorf("resolve unknown foreshadow %q", u.ID)
 				}
+			default:
+				return fmt.Errorf("invalid foreshadow action %q", u.Action)
 			}
 		}
 		if err := s.io.WriteJSONUnlocked("foreshadow_ledger.json", entries); err != nil {
@@ -375,6 +387,40 @@ func (s *WorldStore) LoadLastReview(fromChapter int) (*domain.ReviewEntry, error
 		return &r, nil
 	}
 	return nil, nil
+}
+
+// LoadReviewsAffectingChapter 返回所有明确把 chapter 纳入返工队列的评审，
+// 新到旧排列。弧/全局评审存放在评审终点，不能再按目标章节文件名查找。
+func (s *WorldStore) LoadReviewsAffectingChapter(chapter int) ([]domain.ReviewEntry, error) {
+	entries, err := os.ReadDir(s.io.path("reviews"))
+	if os.IsNotExist(err) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var reviews []domain.ReviewEntry
+	for _, entry := range entries {
+		if entry.IsDir() || !strings.HasSuffix(entry.Name(), ".json") {
+			continue
+		}
+		data, err := os.ReadFile(s.io.path("reviews/" + entry.Name()))
+		if err != nil {
+			return nil, err
+		}
+		var review domain.ReviewEntry
+		if err := json.Unmarshal(data, &review); err != nil {
+			return nil, fmt.Errorf("parse reviews/%s: %w", entry.Name(), err)
+		}
+		if slices.Contains(review.AffectedChapters, chapter) ||
+			(review.Scope == "chapter" && review.Chapter == chapter && review.Verdict != "accept" && len(review.AffectedChapters) == 0) {
+			reviews = append(reviews, review)
+		}
+	}
+	slices.SortFunc(reviews, func(a, b domain.ReviewEntry) int {
+		return b.Chapter - a.Chapter
+	})
+	return reviews, nil
 }
 
 // ── render helpers ──

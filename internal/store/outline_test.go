@@ -108,6 +108,24 @@ func TestCheckArcBoundaryNextArcInSameVolume(t *testing.T) {
 	}
 }
 
+func TestCheckArcBoundaryReportsExactArcSpan(t *testing.T) {
+	s := setupLayered(t, []domain.VolumeOutline{{
+		Index: 1,
+		Arcs: []domain.ArcOutline{
+			{Index: 1, Chapters: []domain.OutlineEntry{{Title: "一"}, {Title: "二"}}},
+			{Index: 2, Chapters: []domain.OutlineEntry{{Title: "三"}, {Title: "四"}, {Title: "五"}}},
+		},
+	}})
+
+	b, err := s.Outline.CheckArcBoundary(5)
+	if err != nil {
+		t.Fatalf("CheckArcBoundary: %v", err)
+	}
+	if b == nil || !b.IsArcEnd || b.StartChapter != 3 || b.EndChapter != 5 {
+		t.Fatalf("unexpected arc span: %+v", b)
+	}
+}
+
 func TestExpandArcCalibratesUnwrittenPlan(t *testing.T) {
 	s := setupLayered(t, []domain.VolumeOutline{{
 		Index: 1, Title: "第一卷", Theme: "起步",

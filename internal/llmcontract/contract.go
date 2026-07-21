@@ -1,6 +1,6 @@
-// Package llmcontract 是直接结构化返回的统一契约与执行层
-// (docs/structured-output-refactor.md §5)：静态 Contract 是结构的单一来源，
-// Execute 统一完成能力选择、提示词准备、请求重试、Schema/DTO 解码和反馈自愈。
+// Package llmcontract 是直接结构化返回的统一契约与执行层：静态 Contract
+// 是结构的单一来源，Execute 统一完成能力选择、提示词准备、请求重试、
+// Schema/DTO 解码和反馈自愈。
 // 协议在请求发出前确定；原生请求被拒或违约时原样暴露，禁止静默去掉 schema 重发。
 package llmcontract
 

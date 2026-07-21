@@ -1,8 +1,11 @@
 package store
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
+	"path/filepath"
 	"sync"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -154,7 +157,46 @@ func (s *Store) FoundationMissing() ([]string, error) {
 			missing = append(missing, "compass")
 		}
 	}
+	// 新书只有经过模型对已落盘工件的显式语义审查，才允许从规划进入写作。
+	// PhaseWriting/Complete 代表旧书或已审查的新书，保持历史项目兼容；审查本身
+	// 是一个动作而非文件缺失，因此只在其它工件齐全时追加。
+	if len(missing) == 0 {
+		progress, err := s.Progress.Load()
+		if err != nil {
+			return nil, fmt.Errorf("load progress: %w", err)
+		}
+		if progress == nil || (progress.Phase != domain.PhaseWriting && progress.Phase != domain.PhaseComplete) {
+			missing = append(missing, "foundation_audit")
+		}
+	}
 	return missing, nil
+}
+
+// FoundationFingerprint 返回当前基础设定工件的内容指纹。Architect 必须把
+// novel_context 读到的这个值原样交回审查工具，确保结论针对的是实际落盘版本，
+// 而不是会话中尚未保存或已经过期的内容。
+func (s *Store) FoundationFingerprint() (string, error) {
+	files := []string{"premise.md", "outline.json", "characters.json", "world_rules.json"}
+	layered, err := s.Outline.LoadLayeredOutline()
+	if err != nil {
+		return "", fmt.Errorf("load layered outline: %w", err)
+	}
+	if len(layered) > 0 {
+		files = append(files, "layered_outline.json", "meta/compass.json")
+	}
+
+	h := sha256.New()
+	for _, rel := range files {
+		data, err := os.ReadFile(filepath.Join(s.dir, filepath.FromSlash(rel)))
+		if err != nil {
+			return "", fmt.Errorf("read %s: %w", rel, err)
+		}
+		_, _ = h.Write([]byte(rel))
+		_, _ = h.Write([]byte{0})
+		_, _ = h.Write(data)
+		_, _ = h.Write([]byte{0})
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // Init 创建所需的子目录结构。

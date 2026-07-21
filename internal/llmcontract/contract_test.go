@@ -61,8 +61,7 @@ func structured(jsonSchema, strict llm.Support) llm.Capabilities {
 
 func boolPtr(v bool) *bool { return &v }
 
-// TestResolveMatrix 覆盖 config 三态 × adapter 能力的全部组合
-// (docs/structured-output-refactor.md §11.3)。
+// TestResolveMatrix 覆盖 config 三态 × adapter 能力的全部组合。
 func TestResolveMatrix(t *testing.T) {
 	cases := []struct {
 		name       string

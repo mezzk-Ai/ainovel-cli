@@ -3,6 +3,7 @@ package flow
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/voocel/ainovel-cli/internal/domain"
@@ -99,9 +100,11 @@ func TestRoute_ArcEndNeedsReview(t *testing.T) {
 		Progress:      p,
 		LastCompleted: 10,
 		ArcBoundary: &storepkg.ArcBoundary{
-			IsArcEnd: true,
-			Volume:   1,
-			Arc:      2,
+			IsArcEnd:     true,
+			Volume:       1,
+			Arc:          2,
+			StartChapter: 11,
+			EndChapter:   22,
 		},
 	}
 	got := Route(s)
@@ -110,6 +113,9 @@ func TestRoute_ArcEndNeedsReview(t *testing.T) {
 	}
 	if got.Reason != "弧末评审未完成" {
 		t.Errorf("reason mismatch: %q", got.Reason)
+	}
+	if !strings.Contains(got.Task, "第 11-22 章") || !strings.Contains(got.Task, "chapter=22") {
+		t.Fatalf("arc review task must carry exact span and endpoint: %q", got.Task)
 	}
 }
 

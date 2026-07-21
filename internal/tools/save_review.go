@@ -4,10 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/voocel/agentcore/schema"
 	"github.com/voocel/ainovel-cli/internal/domain"
+	"github.com/voocel/ainovel-cli/internal/llmcontract"
 	"github.com/voocel/ainovel-cli/internal/store"
 )
 
@@ -31,6 +33,7 @@ func (t *SaveReviewTool) Label() string { return "保存审阅" }
 // 写工具（同时更新 reviews/ 与 Progress 的 PendingRewrites/Flow），禁止并发。
 func (t *SaveReviewTool) ReadOnly(_ json.RawMessage) bool        { return false }
 func (t *SaveReviewTool) ConcurrencySafe(_ json.RawMessage) bool { return false }
+func (t *SaveReviewTool) StrictSchema() bool                     { return true }
 
 func (t *SaveReviewTool) Schema() map[string]any {
 	issueSchema := schema.Object(
@@ -38,7 +41,9 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("severity", schema.Enum("严重程度", "critical", "error", "warning")).Required(),
 		schema.Property("description", schema.String("问题描述")).Required(),
 		schema.Property("evidence", schema.String("证据：原文片段、具体情节或状态数据")).Required(),
-		schema.Property("suggestion", schema.String("修改建议")),
+		schema.Property("suggestion", llmcontract.Nullable(schema.String("修改建议；无需建议时为 null"))).Required(),
+		schema.Property("chapters", schema.Array("该问题证据实际所在的章节；弧评审必须落在任务给定区间", schema.Int("章节号"))).Required(),
+		schema.Property("requires_change", schema.Bool("该问题是否应立即触发所列章节返工，由 Editor 结合整体阅读体验判断")).Required(),
 	)
 	dimensionSchema := schema.Object(
 		schema.Property("dimension", schema.String("评价维度；由当前评审任务和 rubric 决定")).Required(),
@@ -50,12 +55,11 @@ func (t *SaveReviewTool) Schema() map[string]any {
 		schema.Property("scope", schema.Enum("审阅范围", "chapter", "global", "arc")).Required(),
 		schema.Property("dimensions", schema.Array("分维度评分；基础 rubric 由 Editor 提示提供，可按任务补充更具体维度", dimensionSchema)).Required(),
 		schema.Property("issues", schema.Array("发现的问题", issueSchema)).Required(),
-		schema.Property("contract_status", schema.Enum("章节契约完成度", "met", "partial", "missed")),
-		schema.Property("contract_misses", schema.Array("未完成或违背的 contract 条目", schema.String(""))),
-		schema.Property("contract_notes", schema.String("对 contract 履行情况的简要说明")),
+		schema.Property("contract_status", llmcontract.Nullable(schema.Enum("章节契约完成度；不适用时为 null", "met", "partial", "missed"))).Required(),
+		schema.Property("contract_misses", schema.Array("未完成或违背的 contract 条目；无则为空数组", schema.String(""))).Required(),
+		schema.Property("contract_notes", llmcontract.Nullable(schema.String("对 contract 履行情况的简要说明；无则为 null"))).Required(),
 		schema.Property("verdict", schema.Enum("审阅结论", "accept", "polish", "rewrite")).Required(),
 		schema.Property("summary", schema.String("审阅总结")).Required(),
-		schema.Property("affected_chapters", schema.Array("需要重写或打磨的章节号列表（verdict 为 polish/rewrite 时必填）", schema.Int(""))),
 	)
 }
 
@@ -67,7 +71,8 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	if r.Chapter <= 0 {
 		return nil, fmt.Errorf("chapter must be > 0")
 	}
-	if err := validateReviewEntry(r); err != nil {
+	boundary, err := t.normalizeReviewEntry(&r)
+	if err != nil {
 		return nil, err
 	}
 	flow, err := reviewFlow(r.Verdict)
@@ -80,6 +85,9 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	progress, err := t.store.Progress.Load()
 	if err != nil {
 		return nil, fmt.Errorf("load progress: %w", err)
+	}
+	if r.Scope == "global" && (progress == nil || progress.LatestCompleted() != r.Chapter) {
+		return nil, fmt.Errorf("global review chapter must be the latest completed chapter")
 	}
 
 	// 先原子应用控制状态，再保存审阅工件。若第二步失败，返工意图仍然存在；
@@ -103,11 +111,7 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	// 追加 checkpoint
 	scope := domain.ChapterScope(r.Chapter)
 	if r.Scope == "arc" {
-		vol, arc := 0, 0
-		if progress != nil {
-			vol, arc = progress.CurrentVolume, progress.CurrentArc
-		}
-		scope = domain.ArcScope(vol, arc)
+		scope = domain.ArcScope(boundary.Volume, boundary.Arc)
 	}
 	artifact := fmt.Sprintf("reviews/%02d.json", r.Chapter)
 	if r.Scope == "global" {
@@ -129,30 +133,108 @@ func (t *SaveReviewTool) Execute(_ context.Context, args json.RawMessage) (json.
 	})
 }
 
-func validateReviewEntry(r domain.ReviewEntry) error {
+func (t *SaveReviewTool) normalizeReviewEntry(r *domain.ReviewEntry) (*store.ArcBoundary, error) {
 	switch r.Scope {
 	case "chapter", "global", "arc":
 	default:
-		return fmt.Errorf("invalid review scope: %q", r.Scope)
+		return nil, fmt.Errorf("invalid review scope: %q", r.Scope)
+	}
+	if len(r.AffectedChapters) > 0 {
+		return nil, fmt.Errorf("affected_chapters is derived from issues[].chapters; do not submit it")
 	}
 	if strings.TrimSpace(r.Summary) == "" {
-		return fmt.Errorf("summary is required")
+		return nil, fmt.Errorf("summary is required")
 	}
-	for _, issue := range r.Issues {
+	if r.ContractStatus != "" && r.ContractStatus != "met" && r.ContractStatus != "partial" && r.ContractStatus != "missed" {
+		return nil, fmt.Errorf("invalid contract_status: %q", r.ContractStatus)
+	}
+	for _, miss := range r.ContractMisses {
+		if strings.TrimSpace(miss) == "" {
+			return nil, fmt.Errorf("contract_misses cannot contain empty entries")
+		}
+	}
+	var boundary *store.ArcBoundary
+	if r.Scope == "arc" {
+		var err error
+		boundary, err = t.store.Outline.CheckArcBoundary(r.Chapter)
+		if err != nil {
+			return nil, fmt.Errorf("check arc scope: %w", err)
+		}
+		if boundary == nil || !boundary.IsArcEnd || boundary.EndChapter != r.Chapter {
+			return nil, fmt.Errorf("arc review chapter must be an arc endpoint")
+		}
+	}
+
+	affectedSet := make(map[int]struct{})
+	for i := range r.Issues {
+		issue := &r.Issues[i]
 		if strings.TrimSpace(issue.Description) == "" {
-			return fmt.Errorf("issue description is required")
+			return nil, fmt.Errorf("issue description is required")
 		}
 		if strings.TrimSpace(issue.Evidence) == "" {
-			return fmt.Errorf("issue evidence is required")
+			return nil, fmt.Errorf("issue evidence is required")
+		}
+		switch issue.Severity {
+		case "critical", "error", "warning":
+		default:
+			return nil, fmt.Errorf("invalid issue severity: %q", issue.Severity)
+		}
+		if len(issue.Chapters) == 0 && r.Scope == "chapter" {
+			issue.Chapters = []int{r.Chapter}
+		}
+		if len(issue.Chapters) == 0 {
+			return nil, fmt.Errorf("issue chapters are required when scope=%s", r.Scope)
+		}
+		issue.Chapters = uniqueSortedChapters(issue.Chapters)
+		for _, chapter := range issue.Chapters {
+			switch r.Scope {
+			case "chapter":
+				if chapter != r.Chapter {
+					return nil, fmt.Errorf("chapter review issue must reference chapter %d, got %d", r.Chapter, chapter)
+				}
+			case "global":
+				if chapter <= 0 || chapter > r.Chapter {
+					return nil, fmt.Errorf("global review issue chapter %d outside 1-%d", chapter, r.Chapter)
+				}
+			case "arc":
+				if chapter < boundary.StartChapter || chapter > boundary.EndChapter {
+					return nil, fmt.Errorf("arc review issue chapter %d outside %d-%d", chapter, boundary.StartChapter, boundary.EndChapter)
+				}
+			}
+			if issue.RequiresChange {
+				affectedSet[chapter] = struct{}{}
+			}
 		}
 	}
 	if err := validateDimensions(r.Dimensions); err != nil {
-		return err
+		return nil, err
 	}
-	if (r.Verdict == "rewrite" || r.Verdict == "polish") && len(r.AffectedChapters) == 0 {
-		return fmt.Errorf("affected_chapters is required when verdict=%s", r.Verdict)
+	derived := make([]int, 0, len(affectedSet))
+	for chapter := range affectedSet {
+		derived = append(derived, chapter)
 	}
-	return nil
+	slices.Sort(derived)
+	if r.Verdict == "accept" && len(derived) > 0 {
+		return nil, fmt.Errorf("accept review cannot contain issues with requires_change=true")
+	}
+	if (r.Verdict == "rewrite" || r.Verdict == "polish") && len(derived) == 0 {
+		return nil, fmt.Errorf("verdict=%s requires at least one issue with requires_change=true", r.Verdict)
+	}
+	r.AffectedChapters = derived
+	return boundary, nil
+}
+
+func uniqueSortedChapters(chapters []int) []int {
+	seen := make(map[int]struct{}, len(chapters))
+	for _, chapter := range chapters {
+		seen[chapter] = struct{}{}
+	}
+	result := make([]int, 0, len(seen))
+	for chapter := range seen {
+		result = append(result, chapter)
+	}
+	slices.Sort(result)
+	return result
 }
 
 // reviewFlow 是文学裁定与持久化协议之间唯一的映射点。verdict 由 Editor 决定；

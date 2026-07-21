@@ -2,6 +2,7 @@ package imp
 
 import (
 	"github.com/voocel/agentcore/schema"
+	"github.com/voocel/ainovel-cli/internal/domain"
 	"github.com/voocel/ainovel-cli/internal/llmcontract"
 )
 
@@ -87,8 +88,8 @@ func chapterFactsSchema() map[string]any {
 		schema.Property("foreshadow_updates", schema.Array("伏笔增量", foreshadow)).Required(),
 		schema.Property("relationship_changes", schema.Array("关系变化", relationship)).Required(),
 		schema.Property("state_changes", schema.Array("状态变化", stateChange)).Required(),
-		schema.Property("hook_type", schema.Enum("章末钩子类型", "crisis", "mystery", "desire", "emotion", "choice")).Required(),
-		schema.Property("dominant_strand", schema.Enum("主导叙事线", "quest", "fire", "constellation")).Required(),
+		schema.Property("hook_type", schema.Enum("章末钩子类型", domain.HookTypes()...)).Required(),
+		schema.Property("dominant_strand", schema.Enum("主导叙事线", domain.DominantStrands()...)).Required(),
 	)
 }
 

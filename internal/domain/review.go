@@ -34,11 +34,13 @@ type RelationshipEntry struct {
 
 // ConsistencyIssue 一致性问题。
 type ConsistencyIssue struct {
-	Type        string `json:"type"`     // 模型依据 rubric 给出的具体问题维度
-	Severity    string `json:"severity"` // critical / error / warning
-	Description string `json:"description"`
-	Evidence    string `json:"evidence,omitempty"` // 证据：原文片段、具体情节或状态数据
-	Suggestion  string `json:"suggestion,omitempty"`
+	Type           string `json:"type"`     // 模型依据 rubric 给出的具体问题维度
+	Severity       string `json:"severity"` // critical / error / warning
+	Description    string `json:"description"`
+	Evidence       string `json:"evidence,omitempty"` // 证据：原文片段、具体情节或状态数据
+	Suggestion     string `json:"suggestion,omitempty"`
+	Chapters       []int  `json:"chapters,omitempty"` // 证据实际落在哪些章节
+	RequiresChange bool   `json:"requires_change"`    // 是否应立即进入返工队列，由 Editor 语义判断
 }
 
 // DimensionScore 单维度评审评分。
