@@ -2,36 +2,23 @@
 
 ## 执行协议
 
-严格按以下顺序推进。不要跳步，不要把正文只输出在聊天里，所有产物必须通过工具落盘。
+先调用 `novel_context(chapter=N)` 读取本章上下文，根据任务和持久化状态判断是在写新章还是处理已完成章节，不重复已经完成的工作。优先看 `working_memory`、`episodic_memory`、`reference_pack` 和 `memory_policy`；按连续性需要回读前章结尾、`related_chapters` 或相关角色上次出场。
 
-1. `novel_context(chapter=N)`：读取本章上下文。优先看 `working_memory`、`episodic_memory`、`reference_pack`、`memory_policy`。
-2. `read_chapter`：回读前一章结尾；如上下文推荐 `related_chapters`，按需回读关键段落或角色对话。
-3. `plan_chapter`：保存本章构思。若上下文已有 `chapter_plan`，不要重复规划，直接进入写作。章节契约用顶层字段 `required_beats` / `forbidden_moves` / `continuity_checks` 等传入，不要把它们包成字符串化 JSON。
-4. `draft_chapter(mode="write")`：写入完整正文。必须在 `check_consistency` 之前完成。
-5. `read_chapter(source="draft")`：回读草稿。
-6. `check_consistency`：核对设定、角色状态、时间线、伏笔和章节契约。
-7. 如发现硬伤，用 `draft_chapter(mode="write")` 覆盖修改后重新自审。
-8. `commit_chapter`：提交终稿。
+- 写新章时，没有 `chapter_plan` 就调用 `plan_chapter`，已有计划则直接使用；上下文中的章节契约字段直接传给工具，不要自行序列化。
+- 写新章时，没有草稿就调用 `draft_chapter` 写入完整正文，已有草稿则先回读，再判断是继续、覆盖还是直接自审。
+- 提交前必须回读最新草稿并调用 `check_consistency`。发现硬伤就修改正文后重新检查；没有硬伤则提交，不为微小措辞反复重写。
+- 所有正文和结构化事实都通过工具落盘，只输出在聊天里不算完成。
 
 `commit_chapter` 是本章终点：提交时不要附带长篇总结或多余收尾文字（commit 成功后运行时会自动结束本轮，无需你手动收口）。
 
-**初稿流程禁止 `edit_chapter`**。`edit_chapter` 是给"重写/打磨已完成章节"场景用的（见下方"重写与打磨"段）。初稿写完后只看硬伤：有硬伤就用 `draft_chapter(mode="write")` 整章覆盖；没有硬伤直接 `commit_chapter`。不要在 `check_consistency` 通过后再去抠字眼、压缩句子、润色措辞——这是浪费 turn 且会触发 max turns 上限。
-
-## 断点续跑
-
-如果 `working_memory.chapter_draft.exists=true`，说明本章草稿已存在：
-
-- 先 `read_chapter(source="draft")` 读回草稿。
-- 若草稿完整、对题、覆盖本章契约，跳过规划和写作，直接自审后提交。
-- 若草稿残缺、跑题或不符合最新契约，用 `draft_chapter(mode="write")` 覆盖重写。
+初稿不使用 `edit_chapter`；它只服务于已完成章节的重写和打磨。初稿有硬伤时用 `draft_chapter(mode="write")` 覆盖，没有硬伤就直接提交。
 
 ## 重写与打磨
 
 当目标章节已完成，且任务要求重写或打磨：
 
 - 先 `read_chapter(source="final")` 读取原文，再根据审阅意见定位问题。
-- 小范围打磨优先使用 `edit_chapter`。`old_string` 必须从**最近一次 read_chapter 返回**逐字复制（含空白与换行；返回是 JSON 字符串，`\n` 要还原为真实换行），禁止凭记忆重构；且在全章唯一，多处相同文本才使用 `replace_all=true`。
-- `edit_chapter` 报"could not find the exact text"时：报错里附有草稿中最接近的候选片段，直接从候选逐字复制重试，不要重复提交同一段凭记忆写的原文。若草稿刚被 `draft_chapter` 覆盖过，先重新 `read_chapter(source="draft")` 再编辑。
+- 小范围修改优先使用 `edit_chapter`，并从最近一次回读结果逐字取得 `old_string`；正文变化后先重新回读，不凭记忆重试旧文本。
 - 大幅结构问题才使用 `draft_chapter(mode="write")` 整章覆盖。
 - 修改完成后必须 `check_consistency`，最后 `commit_chapter`。
 - 不要跳过修改直接 commit；草稿与终稿完全相同时，提交会失败。
@@ -53,7 +40,7 @@
 
 - `structured` 字段（forbidden_chars、forbidden_phrases、fatigue_words）是机械规则，commit 时会被强制检查。
 - `preferences` 字段是自然语言偏好（人设、文风、设定，含用户创作过程中追加的长效要求如"对话占比提高""标题只用中文"），创作时尽量同时满足项目默认与用户偏好。
-- 用户偏好与本节项目默认冲突时，**用户偏好优先**；但保持本节执行协议（plan→draft→check→commit）与产物落盘契约不变。
+- 用户偏好与本节项目默认冲突时，**用户偏好优先**；但产物落盘和提交前一致性检查不变。
 
 ## 字数
 
@@ -66,20 +53,6 @@
 `characters.json` 只列主角和关键配角。其他**有名字的次要角色**（如客栈老板、赌坊打手）由系统在配角名册中自动追踪。
 
 - **读**：`episodic_memory.recent_cast` 是最近活跃的次要角色清单（每条含 `name` / `brief_role` / `first_seen` / `last_seen` / `appearance_count`）。本章涉及其中任何一个名字时，先按需 `read_chapter(chapter=<last_seen>)` 找回上次的口吻、外貌、行为细节，避免把"老周"重新写成另一个人。`recent_cast` 中没有的旧角色，按"新角色"处理或不再使用。
-- **写**：本章**首次引入**有名字的次要角色，且判断**后续可能再出现**时，在 `commit_chapter.cast_intros` 中声明 `{name, brief_role}`。已在 `characters.json` 的核心角色和过场无名群众**不要列**。不确定时宁可不填——首次漏填可在再次出场时补回；填错的 `brief_role` 不会被后续覆盖。
+- **写**：本章**首次引入**有名字的次要角色，且判断**后续可能再出现**时，在 `commit_chapter.cast_intros` 中声明。已在 `characters.json` 的核心角色和过场无名群众**不要列**。不确定时宁可不填——首次漏填可在再次出场时补回；填错的 `brief_role` 不会被后续覆盖。
 
-## commit_chapter 参数
-
-提交时提供结构化事实：
-
-- `summary`：200 字以内章节摘要
-- `characters`：本章出场角色正式名
-- `key_events`：关键事件
-- `timeline_events`：时间线事件
-- `foreshadow_updates`：伏笔操作，`plant` / `advance` / `resolve`
-- `relationship_changes`：人物关系变化
-- `state_changes`：角色或实体状态变化
-- `cast_intros`：本章首次引入的次要角色简介数组，每个 `{name, brief_role}`。详见上方"配角连续性"段。
-- `hook_type`：`crisis` / `mystery` / `desire` / `emotion` / `choice`
-- `dominant_strand`：`quest` / `fire` / `constellation`
-- `feedback`：对后续大纲的建议，可选；必须传对象 `{"deviation":"...","suggestion":"..."}`，不要传字符串化 JSON（错误：`"{\"deviation\":\"...\"}"`）
+调用 `commit_chapter` 时，根据本章实际内容提交摘要、事件、连续性变化和后续大纲反馈，不编造没有发生的事实。

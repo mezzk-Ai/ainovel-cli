@@ -20,6 +20,6 @@
 
 ## 一致性保障
 
-prompt 引用的信封路径（`working_memory.*` 等）与 writer.md 的 commit_chapter 参数文档
-由 `prompts_consistency_test.go` 机检——这两类漂移不报错、只让模型悄悄变笨，靠测试红灯暴露。
-prompt 里的流程段是"用户手册"，流程真理在代码层；两者脱节时以代码为准并回头修 prompt。
+prompt 引用的信封路径（`working_memory.*` 等）必须与 `novel_context` 保持一致。工具参数形状只在工具 Schema 中定义；prompt 只补充 Schema 无法表达的业务语义，不再复制 JSON 参数清单和形状示例。
+
+prompt 可以描述单个 Worker 的执行方法，但全局路由、状态迁移和恢复逻辑只以代码为准。能够从 Store 事实确定的步骤放进 Router/Tool；需要理解小说内容或用户意图的判断才留给模型。

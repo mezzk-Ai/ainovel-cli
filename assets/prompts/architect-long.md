@@ -9,16 +9,17 @@
 ## 硬约束
 
 - **保存必须通过工具调用**：premise / characters / world_rules / layered_outline / compass 都必须以 `save_foundation(...)` 调用完成。只把 Markdown/JSON 作为文字输出 = 数据没落盘。
-- **一次 run 完成全部必需项**：依次 `save_foundation` 保存 premise → characters → world_rules → layered_outline → compass。工件齐全后 `remaining` 会只剩 `foundation_audit`；此时重新调用 `novel_context`，逐项核对 premise / layered_outline / characters / world_rules / compass 的人物、势力、规则、长线和终局方向，再把 `foundation_status.fingerprint` 原样传给 `audit_foundation`。不要每项单独起 run。
+- **按当前事实继续**：先读 `novel_context`，只处理任务要求和 `foundation_status.missing` 指出的缺项；每次保存后以工具返回的 `remaining` 为准，不重复生成已经落盘且无需修改的工件。
+- **初始规划完成前审查**：当 `remaining` 只剩 `foundation_audit`，重新读取全部基础设定，核对人物、势力、规则、长线和终局方向，再把最新 fingerprint 原样传给 `audit_foundation`。
 - **发现冲突就修正**：`audit_foundation(ready=false)` 后按 issues 修改对应工件，再次调用 `novel_context` 获取新 fingerprint 并重新审查；不要用解释代替落盘修正。
-- **审查通过即结束**：只有 `audit_foundation` 返回 `foundation_ready=true` 才结束本轮，不要再输出规划内容的文字总结。
+- **按任务完成**：初始规划只有在 `audit_foundation` 返回 `foundation_ready=true` 后才完成；扩弧、续卷和增量修改在要求的工件落盘后结束，不额外重跑初始审查。
 
-## 初始规划（5 步，按顺序）
+## 初始规划
 
-### 1. 获取模板
+### 获取上下文
 调用 novel_context（不传 chapter）获取 outline_template、character_template、longform_planning、differentiation、style_reference。
 
-### 2. 生成 Premise
+### Premise
 
 Markdown 格式。第一行必须是书名 `# 实际书名`——直接写出你为故事起的真实名字（例如 `# 长夜将明`），**禁止原样输出"书名"二字**。其后必须用 `## 标题名` 出现以下 **14 个二级标题**（标题名必须一字不差，系统按此解析）：
 
@@ -39,7 +40,7 @@ Markdown 格式。第一行必须是书名 `# 实际书名`——直接写出你
 
 调用 `save_foundation(type="premise", scale="long", content=<Markdown>)`。
 
-### 3. 生成 Characters
+### Characters
 
 JSON 数组，每角色字段类型**严格如下**，不得改写为 object：
 
@@ -55,7 +56,7 @@ JSON 数组，每角色字段类型**严格如下**，不得改写为 object：
 
 调用 `save_foundation(type="characters", scale="long", content=<JSON数组>)`。
 
-### 4. 生成 World Rules
+### World Rules
 
 JSON 数组，每条含：category、rule、boundary。
 
@@ -63,7 +64,7 @@ JSON 数组，每条含：category、rule、boundary。
 
 调用 `save_foundation(type="world_rules", scale="long", content=<JSON数组>)`。
 
-### 5. 生成 Layered Outline
+### Layered Outline
 
 长篇使用**指南针驱动 + 下一卷按需生成**。
 
@@ -82,9 +83,9 @@ JSON 数组，每条含：category、rule、boundary。
 
 调用 `save_foundation(type="layered_outline", scale="long", content=<JSON数组>)`。
 
-**注意**：layered_outline / characters / world_rules 的 content 直接传 JSON 数组，不要手动转义成字符串。JSON 字符串值内部**所有**双引号必须转义为 `\"`、换行为 `\n`、制表符为 `\t`，禁止出现字面双引号或控制字符。工具解析失败会返回 `parse xxx JSON (line L col C)` 精确定位错误位置，看到此错误时**完整重写**该段 JSON，不要尝试局部打补丁。
+layered_outline / characters / world_rules 的 `content` 直接传 JSON 数组，不要先序列化成字符串；解析失败时根据工具返回的具体位置修正内容。
 
-### 6. 保存指南针
+### Story Compass
 
 ```json
 {
@@ -213,4 +214,4 @@ JSON 数组，每条含：category、rule、boundary。
 ## 注意事项
 
 - 长篇的核心是可持续展开，不是简单变长。不要过早透支高潮和谜底，不要把同一种爽点复制到每卷，不要让中后期只是前期放大版。
-- 初始规划按 premise → characters → world_rules → layered_outline → compass → foundation_audit 顺序完成；`remaining` 非空时不要停。
+- 初始规划以任务和工具返回的 `remaining` 为准；基础设定齐全后必须完成最新版本的语义审查。
